@@ -1,5 +1,5 @@
 .DEFAULT_GOAL := help
-.PHONY: help up down restart logs ps open worker validate trigger labels clean
+.PHONY: help up down restart logs ps open worker validate health trigger labels clean
 
 # Host-side dagu CLI reads this project rather than ~/.config/dagu.
 export DAGU_HOME := $(CURDIR)
@@ -7,6 +7,7 @@ export DAGU_HOME := $(CURDIR)
 COORDINATOR := 127.0.0.1:50055
 POLLER      := dags/sweatcharge-poller.yaml
 IMPLEMENTER := dags/agent-implement-issue.yaml
+HEALTHCHECK := dags/worker-health-check.yaml
 
 REPO      ?= cuongkane/sweatcharge
 WORKSPACE ?= /Users/lexuancuong/CUONG/SWC
@@ -48,10 +49,10 @@ worker: ## Run the host worker in the FOREGROUND; keep this pane open
 validate: ## Validate every DAG definition
 	dagu validate $(POLLER)
 	dagu validate $(IMPLEMENTER)
-	dagu validate dags/smoke-host.yaml
+	dagu validate $(HEALTHCHECK)
 
-smoke: ## Prove the host worker is reachable, tooled and logged in
-	@docker compose exec -T dagu dagu enqueue smoke-host
+health: ## Prove the host worker is reachable, tooled and logged in
+	@docker compose exec -T dagu dagu enqueue worker-health-check
 	@echo "Enqueued. Watch the 'make worker' pane, or http://localhost:8525"
 
 trigger: ## Implement one issue now, bypassing the poll: make trigger ISSUE=42
@@ -62,7 +63,7 @@ trigger: ## Implement one issue now, bypassing the poll: make trigger ISSUE=42
 		REPO=$(REPO) WORKSPACE=$(WORKSPACE) SKILL=$(SKILL) ISSUE_NUMBER=$(ISSUE)
 
 labels: ## Create the agent:* labels on $(REPO) (idempotent)
-	@gh label create "agent:implement"   --repo $(REPO) --color 0E8A16 --force \
+	@gh label create "agent:todo"        --repo $(REPO) --color 0E8A16 --force \
 		--description "Queued for the implementation agent"
 	@gh label create "agent:in-progress" --repo $(REPO) --color FBCA04 --force \
 		--description "Agent is currently implementing this"

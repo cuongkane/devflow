@@ -108,7 +108,7 @@ steps:
 
       > $(field .question)
 
-      Answer it in a comment, then relabel this issue \`agent:implement\`.
+      Answer it in a comment, then relabel this issue \`agent:todo\`.
       EOF
           ;;
         *)

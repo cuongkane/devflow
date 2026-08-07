@@ -1,6 +1,6 @@
 # DAGU — GitHub issue → autonomous implementation → draft PR
 
-File an issue, label it `agent:implement`, and a Claude Code agent picks it up,
+File an issue, label it `agent:todo`, and a Claude Code agent picks it up,
 implements it, and opens a **draft** pull request. You review and merge.
 
 ## Start it
@@ -8,7 +8,7 @@ implements it, and opens a **draft** pull request. You review and merge.
 ```bash
 make up        # dagu scheduler + web UI + coordinator, in Docker
 make worker    # host worker — FOREGROUND, keep this pane open (tmux)
-make smoke     # prove the worker is reachable, tooled and logged in
+make health    # prove the worker is reachable, tooled and logged in
 ```
 
 Web UI: <http://localhost:8525>
@@ -40,10 +40,10 @@ coordinator ships task definitions over gRPC and the worker streams logs back.
 
 | Label | Meaning |
 |---|---|
-| `agent:implement` | Queued. The poller picks the **oldest** one every 10 min. |
+| `agent:todo` | Queued. The poller picks the **oldest** one every 10 min. |
 | `agent:in-progress` | Being worked on. Also the **mutex** — while any issue holds this, the poller starts nothing new. |
 | `agent:done` | Draft PR opened; the URL is commented on the issue. |
-| `agent:needs-input` | The agent hit a blocking question, posted as a comment. Answer it, then relabel `agent:implement`. |
+| `agent:needs-input` | The agent hit a blocking question, posted as a comment. Answer it, then relabel `agent:todo`. |
 | `agent:failed` | The run broke. The comment points at the working files. |
 
 Because the label is the mutex, a scheduler restart cannot lose track, and you
@@ -56,7 +56,7 @@ compose.yaml                      dagu container
 Makefile                          every command you need
 dags/sweatcharge-poller.yaml      schedule + per-repo config
 dags/agent-implement-issue.yaml   repo-agnostic implementer
-dags/smoke-host.yaml              diagnostic
+dags/worker-health-check.yaml     host worker health check
 prompts/implement-issue.md        the headless prompt
 data/  logs/                      runtime state (gitignored)
 ```
@@ -77,12 +77,12 @@ make trigger ISSUE=42     # implement one issue now, bypassing the poll and the 
 ```
 
 `dagu start` runs a DAG **locally**; only the queue dispatches to the worker.
-That is why `make smoke` uses `dagu enqueue` while `make trigger` uses
+That is why `make health` uses `dagu enqueue` while `make trigger` uses
 `dagu start` — the latter runs on this Mac, which already has the toolchain.
 
 ## When nothing is happening
 
-1. `make smoke` — fails on the exact broken step.
+1. `make health` — fails on the exact broken step.
 2. Is `make worker` still running? It does not survive a reboot or a closed pane.
 3. Is an issue stuck on `agent:in-progress`? That blocks every poll (see below).
 4. `make logs`, or the run history at <http://localhost:8525>.
@@ -98,7 +98,7 @@ blocks every later poll, and an orphaned git worktree:
 
 ```bash
 gh issue edit <N> --repo cuongkane/sweatcharge \
-  --remove-label agent:in-progress --add-label agent:implement
+  --remove-label agent:in-progress --add-label agent:todo
 
 git -C /Users/lexuancuong/CUONG/SWC worktree list
 git -C /Users/lexuancuong/CUONG/SWC worktree remove ../SWC-worktrees/<slug>

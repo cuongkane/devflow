@@ -1,5 +1,5 @@
 type: graph
-description: Pick up cuongkane/sweatcharge issues labelled agent:implement
+description: Pick up cuongkane/sweatcharge issues labelled agent:todo
 schedule: "*/10 * * * *"
 overlap_policy: skip
 
@@ -20,15 +20,51 @@ steps:
   # references as literal text rather than substituting an empty string.
   - id: pick_issue
     run: |
+      set -eu
+
+      # stdout is captured into ISSUE_NUMBER, so every log line goes to stderr.
+      # dagu keeps the two in separate files and shows both in the run view.
+      log() { echo "[pick_issue] $*" >&2; }
+
+      # A gh failure must be red, not a silently green idle poll -- that is
+      # indistinguishable from "nothing queued" and hides broken auth for days.
       busy=$(gh issue list --repo ${consts.repo} \
-        --label "agent:in-progress" --state open --json number --jq 'length')
-      if [ "$busy" != "0" ]; then
+        --label "agent:in-progress" --state open --limit 100 \
+        --json number,title) || { log "ERROR: gh failed listing agent:in-progress"; exit 1; }
+
+      if [ "$(printf '%s' "$busy" | jq 'length')" != "0" ]; then
+        log "idle: mutex held by $(printf '%s' "$busy" \
+          | jq -r '[.[] | "#\(.number) \(.title)"] | join(", ")')"
+        log "if that run is dead, see 'Unsticking a killed run' in the README"
         echo none          # one implementation at a time
         exit 0
       fi
-      gh issue list --repo ${consts.repo} \
-        --label "agent:implement" --state open --json number \
-        --jq 'sort_by(.number) | .[0].number // "none"'
+
+      # --limit matters: gh defaults to 30 newest-first, and the sort below is
+      # client-side, so a smaller page could hide the genuinely oldest issue.
+      queue=$(gh issue list --repo ${consts.repo} \
+        --label "agent:todo" --state open --limit 200 \
+        --json number,title) || { log "ERROR: gh failed listing agent:todo"; exit 1; }
+
+      if [ "$(printf '%s' "$queue" | jq 'length')" = "0" ]; then
+        log "idle: no open issue labelled agent:todo"
+        # By far the most common cause of "I filed it and nothing happened":
+        # only the agent-feature issue template applies the label, so a blank
+        # issue or a plain `gh issue create` lands unlabelled and invisible here.
+        bare=$(gh issue list --repo ${consts.repo} --state open --limit 200 \
+          --json number,labels \
+          --jq '[.[] | select([.labels[].name] | any(startswith("agent:")) | not)
+                     | "#\(.number)"] | join(", ")' 2>/dev/null || echo "")
+        [ -z "$bare" ] || log "hint: open issues carrying no agent:* label: $bare"
+        echo none
+        exit 0
+      fi
+
+      log "queued: $(printf '%s' "$queue" | jq -r 'sort_by(.number)
+        | [.[] | "#\(.number)"] | join(", ")')"
+      picked=$(printf '%s' "$queue" | jq -r 'sort_by(.number) | .[0].number')
+      log "picked #$picked (oldest by issue number)"
+      echo "$picked"
     output: ISSUE_NUMBER
 
   - id: claim
@@ -36,8 +72,11 @@ steps:
     preconditions:
       - condition: 'test "${ISSUE_NUMBER}" != "none"'
     run: |
+      set -eu
+      echo "[claim] #${ISSUE_NUMBER}: agent:todo -> agent:in-progress" >&2
       gh issue edit "${ISSUE_NUMBER}" --repo ${consts.repo} \
-        --remove-label "agent:implement" --add-label "agent:in-progress"
+        --remove-label "agent:todo" --add-label "agent:in-progress"
+      echo "[claim] #${ISSUE_NUMBER} claimed; dispatching agent-implement-issue" >&2
     # An idle poll must finish green, not red.
     continue_on: skipped
 

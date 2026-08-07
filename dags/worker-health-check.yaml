@@ -1,5 +1,5 @@
 type: graph
-description: Diagnostic - prove the host worker is reachable, tooled and logged in
+description: Health check - prove the host worker is reachable, tooled and logged in
 
 # Run this whenever the pipeline is silently doing nothing. It fails on the
 # exact step that is broken, which is faster than reading scheduler logs.
