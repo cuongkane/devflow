@@ -1,0 +1,56 @@
+type: graph
+description: Pick up cuongkane/sweatcharge issues labelled agent:implement
+schedule: "*/10 * * * *"
+overlap_policy: skip
+
+# Every step needs gh/jq and the local repo, so the whole DAG runs on the native
+# host worker rather than inside the dagu container.
+worker_selector:
+  host: "true"
+
+consts:
+  - repo: cuongkane/sweatcharge
+  - workspace: /Users/lexuancuong/CUONG/SWC
+  - skill: implement-sweatcharge-feature
+
+steps:
+  # One decision step, so ISSUE_NUMBER is always defined. Splitting the busy
+  # check into its own step would let a downstream precondition see the literal
+  # text "${ISSUE_NUMBER}" when that step is skipped -- dagu leaves unresolved
+  # references as literal text rather than substituting an empty string.
+  - id: pick_issue
+    run: |
+      busy=$(gh issue list --repo ${consts.repo} \
+        --label "agent:in-progress" --state open --json number --jq 'length')
+      if [ "$busy" != "0" ]; then
+        echo none          # one implementation at a time
+        exit 0
+      fi
+      gh issue list --repo ${consts.repo} \
+        --label "agent:implement" --state open --json number \
+        --jq 'sort_by(.number) | .[0].number // "none"'
+    output: ISSUE_NUMBER
+
+  - id: claim
+    depends: pick_issue
+    preconditions:
+      - condition: 'test "${ISSUE_NUMBER}" != "none"'
+    run: |
+      gh issue edit "${ISSUE_NUMBER}" --repo ${consts.repo} \
+        --remove-label "agent:implement" --add-label "agent:in-progress"
+    # An idle poll must finish green, not red.
+    continue_on: skipped
+
+  - id: dispatch
+    depends: claim
+    preconditions:
+      - condition: 'test "${ISSUE_NUMBER}" != "none"'
+    action: dag.run
+    with:
+      dag: agent-implement-issue
+      params:
+        REPO: ${consts.repo}
+        WORKSPACE: ${consts.workspace}
+        SKILL: ${consts.skill}
+        ISSUE_NUMBER: "${ISSUE_NUMBER}"
+    continue_on: skipped

@@ -1,0 +1,125 @@
+type: graph
+description: Implement one GitHub issue with a Claude Code skill and open a draft PR
+max_output_size: 10485760
+
+# Needs claude (macOS keychain auth), gh, git, jq and the checkout on disk.
+worker_selector:
+  host: "true"
+
+params:
+  - name: REPO
+    type: string
+    required: true
+    description: owner/name of the GitHub repository
+  - name: WORKSPACE
+    type: string
+    required: true
+    description: absolute path to the local checkout
+  - name: SKILL
+    type: string
+    required: true
+    description: Claude Code skill that performs the implementation
+  - name: ISSUE_NUMBER
+    type: string
+    required: true
+
+consts:
+  - prompts_dir: /Users/lexuancuong/CUONG/DAGU/prompts
+  - budget_usd: "15"
+
+env:
+  # Concurrency is 1, so a per-issue path is unambiguous and stays around for
+  # debugging after the run.
+  - RUN_DIR: /tmp/dagu-agent/${params.ISSUE_NUMBER}
+
+steps:
+  - id: fetch_issue
+    working_dir: ${params.WORKSPACE}
+    run: |
+      set -eu
+      mkdir -p "$RUN_DIR"
+      rm -f "$RUN_DIR/result.json"
+
+      gh issue view "${params.ISSUE_NUMBER}" --repo "${params.REPO}" \
+        --json number,title,body > "$RUN_DIR/issue.json"
+
+      # The issue body is untrusted text. It only ever reaches the agent as a
+      # file, never interpolated into a shell command or into the prompt string.
+      jq -r '"# Issue #\(.number): \(.title)\n\n\(.body // "(no description)")"' \
+        "$RUN_DIR/issue.json" > "$RUN_DIR/brief.md"
+
+      sed -e "s|{{SKILL}}|${params.SKILL}|g" \
+          -e "s|{{REPO}}|${params.REPO}|g" \
+          -e "s|{{ISSUE_NUMBER}}|${params.ISSUE_NUMBER}|g" \
+          -e "s|{{BRIEF_PATH}}|$RUN_DIR/brief.md|g" \
+          -e "s|{{RESULT_PATH}}|$RUN_DIR/result.json|g" \
+          "${consts.prompts_dir}/implement-issue.md" > "$RUN_DIR/prompt.md"
+
+  - id: implement
+    depends: fetch_issue
+    working_dir: ${params.WORKSPACE}
+    timeout_sec: 7200          # 2h ceiling; the skill's full flow is 30-90 min
+    retry_policy:
+      limit: 0                 # a partial run already created a branch and worktree
+      interval_sec: 0          # required by the schema even when retries are off
+    continue_on:
+      failure: true            # report the outcome on the issue either way
+    run: |
+      claude -p "$(cat "$RUN_DIR/prompt.md")" \
+        --permission-mode bypassPermissions \
+        --model opus \
+        --output-format json \
+        --max-budget-usd ${consts.budget_usd} \
+        > "$RUN_DIR/claude-output.json"
+
+  - id: report
+    depends: implement
+    working_dir: ${params.WORKSPACE}
+    run: |
+      set -u
+      result="$RUN_DIR/result.json"
+      status=$(jq -r '.status // "failed"' "$result" 2>/dev/null || echo failed)
+
+      case "$status" in
+        completed)
+          label="agent:done"
+          body="Draft PR: $(jq -r '.pr_url // "(none reported)"' "$result")
+
+      $(jq -r '.summary // ""' "$result")"
+          ;;
+        blocked)
+          label="agent:needs-input"
+          body="The agent stopped on a blocking question:
+
+      > $(jq -r '.question // "(none reported)"' "$result")
+
+      Answer in a comment, then swap the label back to \`agent:implement\`."
+          ;;
+        *)
+          label="agent:failed"
+          body="Run \`${context.run.id}\` did not complete: $(jq -r '.error // "no result.json written"' "$result" 2>/dev/null || echo 'no result.json written')
+
+      Working files: $RUN_DIR"
+          ;;
+      esac
+
+      gh issue comment "${params.ISSUE_NUMBER}" --repo "${params.REPO}" --body "$body"
+      gh issue edit "${params.ISSUE_NUMBER}" --repo "${params.REPO}" \
+        --remove-label "agent:in-progress" --add-label "$label"
+
+      # Surface a non-completed outcome as a red run in the dagu UI.
+      test "$status" = "completed"
+
+handler_on:
+  # Covers the paths `report` cannot reach: timeout, worker loss, a step dying
+  # before it runs. Without this the issue would stay pinned to agent:in-progress
+  # and block every later poll.
+  failure:
+    run: |
+      if gh issue view "${params.ISSUE_NUMBER}" --repo "${params.REPO}" \
+           --json labels --jq '.labels[].name' | grep -qx "agent:in-progress"; then
+        gh issue edit "${params.ISSUE_NUMBER}" --repo "${params.REPO}" \
+          --remove-label "agent:in-progress" --add-label "agent:failed"
+        gh issue comment "${params.ISSUE_NUMBER}" --repo "${params.REPO}" \
+          --body "Run \`${context.run.id}\` failed before reporting. Log: ${context.paths.log_file}"
+      fi

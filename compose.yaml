@@ -1,0 +1,49 @@
+# Dagu: scheduler + web UI + coordinator.
+#
+# This container is the "brain" only: it holds the schedule, the web UI, and run
+# history. It deliberately carries no tooling. Every step is dispatched over gRPC
+# to the native host worker (`make worker`), which has claude, gh, git, jq, make,
+# docker and your repositories.
+#
+# See README.md for why, and docs.dagu.sh/configurations/deployment/docker-compose
+# for the upstream reference this is based on.
+
+services:
+  dagu:
+    image: ghcr.io/dagucloud/dagu:latest
+    container_name: dagu
+    hostname: dagu
+
+    ports:
+      - "8525:8080"     # web UI
+      - "50055:50055"   # coordinator gRPC — the host worker dials this
+
+    entrypoint: ["/usr/local/bin/tini", "-g", "--"]
+    command:
+      - dagu
+      - start-all
+      # Bind the coordinator to all interfaces so it is reachable through the
+      # published port. Without --coordinator.advertise the coordinator registers
+      # its container hostname, which the host worker cannot resolve, and the
+      # worker silently never connects.
+      - --coordinator.host=0.0.0.0
+      - --coordinator.advertise=127.0.0.1
+
+    environment:
+      - DAGU_HOME=/var/lib/dagu
+      - DAGU_HOST=0.0.0.0
+      - DAGU_PORT=8080
+      - DAGU_DAGS_DIR=/var/lib/dagu/dags
+      - DAGU_AUTH_MODE=none   # published on localhost only
+      - DAGU_TZ=Asia/Ho_Chi_Minh
+
+    volumes:
+      - ./dags:/var/lib/dagu/dags
+      - ./data:/var/lib/dagu/data
+      - ./logs:/var/lib/dagu/logs
+
+    # No /var/run/docker.sock mount: the upstream reference includes it for
+    # Docker-in-Docker, but nothing executes inside this container here.
+
+    user: "0:0"
+    restart: unless-stopped

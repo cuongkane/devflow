@@ -1,0 +1,29 @@
+type: graph
+description: Diagnostic - prove the host worker is reachable, tooled and logged in
+
+# Run this whenever the pipeline is silently doing nothing. It fails on the
+# exact step that is broken, which is faster than reading scheduler logs.
+worker_selector:
+  host: "true"
+
+steps:
+  - id: tools
+    run: |
+      set -eu
+      for bin in claude gh git jq make docker; do
+        printf '%-8s %s\n' "$bin" "$(command -v "$bin" || echo MISSING)"
+        command -v "$bin" >/dev/null
+      done
+
+  - id: github_auth
+    depends: tools
+    run: gh auth status
+
+  - id: claude_auth
+    depends: tools
+    # The usual failure is "Not logged in": claude reads the subscription
+    # credential from the macOS keychain, so the worker must run inside your
+    # login session -- a LaunchDaemon cannot do this.
+    timeout_sec: 120
+    run: |
+      claude -p "Reply with exactly OK" --max-turns 1
