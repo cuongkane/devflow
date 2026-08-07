@@ -78,32 +78,52 @@ steps:
     run: |
       set -u
       result="$RUN_DIR/result.json"
-      status=$(jq -r '.status // "failed"' "$result" 2>/dev/null || echo failed)
+      body="$RUN_DIR/comment.md"
 
+      # A missing or malformed result.json is itself a failure, not a crash.
+      status=$(jq -r '.status // "failed"' "$result" 2>/dev/null || echo failed)
+      field() { jq -r "$1 // \"\"" "$result" 2>/dev/null || echo ""; }
+
+      # No result.json at all means the agent died before it could report, which
+      # is the least self-explanatory failure and needs a hint of its own.
+      reason=$(field .error)
+      [ -n "$reason" ] || reason="The agent wrote no result.json. It was most likely
+      killed, timed out after 2h, or exhausted its budget. Check claude-output.json."
+
+      # Built with a here-doc rather than shell string concatenation so the
+      # comment's own line breaks and indentation survive intact.
       case "$status" in
         completed)
           label="agent:done"
-          body="Draft PR: $(jq -r '.pr_url // "(none reported)"' "$result")
+          cat > "$body" <<EOF
+      Draft PR: $(field .pr_url)
 
-      $(jq -r '.summary // ""' "$result")"
+      $(field .summary)
+      EOF
           ;;
         blocked)
           label="agent:needs-input"
-          body="The agent stopped on a blocking question:
+          cat > "$body" <<EOF
+      The agent stopped on a blocking question:
 
-      > $(jq -r '.question // "(none reported)"' "$result")
+      > $(field .question)
 
-      Answer in a comment, then swap the label back to \`agent:implement\`."
+      Answer it in a comment, then relabel this issue \`agent:implement\`.
+      EOF
           ;;
         *)
           label="agent:failed"
-          body="Run \`${context.run.id}\` did not complete: $(jq -r '.error // "no result.json written"' "$result" 2>/dev/null || echo 'no result.json written')
+          cat > "$body" <<EOF
+      Run \`${context.run.id}\` did not complete.
 
-      Working files: $RUN_DIR"
+      $reason
+
+      Working files: \`$RUN_DIR\`
+      EOF
           ;;
       esac
 
-      gh issue comment "${params.ISSUE_NUMBER}" --repo "${params.REPO}" --body "$body"
+      gh issue comment "${params.ISSUE_NUMBER}" --repo "${params.REPO}" --body-file "$body"
       gh issue edit "${params.ISSUE_NUMBER}" --repo "${params.REPO}" \
         --remove-label "agent:in-progress" --add-label "$label"
 
