@@ -11,6 +11,10 @@ A separate clarifier agent has read the issue, explored `{{WORKSPACE}}`, put its
 questions to a human, and folded the answers into `{{BRIEF_PATH}}`. That file is
 the specification. Where it and the raw issue disagree, the file wins.
 
+It states **requirements only** — deliberately no pointers, no plan, no
+technical approach. The exploration and the design are entirely yours; do not
+read the absence of guidance as scope that was cut.
+
 **Do not re-open clarification.** The ambiguities worth a human's time have been
 resolved; the rest are yours to decide from repository precedent, exactly as the
 skill instructs. If you find yourself wanting to ask a question, first check
