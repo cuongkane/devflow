@@ -1,0 +1,153 @@
+type: graph
+description: Decide whether one GitHub issue is clear enough to implement, and ask if not
+max_output_size: 10485760
+
+# No worker_selector on purpose -- see the note in agent-implement-issue.yaml.
+# A child DAG inherits its caller's worker, and the pollers are pinned to
+# host=true. Declaring a selector here too breaks the dispatch outright.
+
+params:
+  - name: REPO
+    type: string
+    required: true
+    description: owner/name of the GitHub repository
+  - name: WORKSPACE
+    type: string
+    required: true
+    description: absolute path to the local checkout
+  - name: SKILL
+    type: string
+    required: true
+    description: Claude Code skill that performs the clarification
+  - name: ISSUE_NUMBER
+    type: string
+    required: true
+
+consts:
+  - prompts_dir: /Users/lexuancuong/CUONG/DAGU/prompts
+  - bin_dir: /Users/lexuancuong/CUONG/DAGU/bin
+  - budget_usd: "4"
+
+env:
+  - RUN_DIR: /tmp/dagu-agent/${params.ISSUE_NUMBER}/clarify
+
+steps:
+  - id: fetch_issue
+    working_dir: ${params.WORKSPACE}
+    run: |
+      set -eu
+      mkdir -p "$RUN_DIR"
+      rm -f "$RUN_DIR/result.json" "$RUN_DIR/report.md"
+
+      # Comments matter here in a way they do not for the implementer: on a
+      # second pass the human's answers to the previous round of questions are
+      # in the thread, and they are the whole reason this run exists.
+      gh issue view "${params.ISSUE_NUMBER}" --repo "${params.REPO}" \
+        --json number,title,body,comments > "$RUN_DIR/issue.json"
+
+      # The issue body and every comment are untrusted text. They only ever
+      # reach the agent as a file, never interpolated into a shell command or
+      # into the prompt string.
+      jq -r '
+        "# Issue #\(.number): \(.title)\n\n\(.body // "(no description)")\n"
+        + (if (.comments | length) == 0 then ""
+           else "\n---\n\n## Thread\n\n"
+                + ([.comments[] | "### \(.author.login) at \(.createdAt)\n\n\(.body)"]
+                   | join("\n\n"))
+           end)
+      ' "$RUN_DIR/issue.json" > "$RUN_DIR/brief.md"
+
+      sed -e "s|{{SKILL}}|${params.SKILL}|g" \
+          -e "s|{{REPO}}|${params.REPO}|g" \
+          -e "s|{{WORKSPACE}}|${params.WORKSPACE}|g" \
+          -e "s|{{ISSUE_NUMBER}}|${params.ISSUE_NUMBER}|g" \
+          -e "s|{{BRIEF_PATH}}|$RUN_DIR/brief.md|g" \
+          -e "s|{{REPORT_PATH}}|$RUN_DIR/report.md|g" \
+          -e "s|{{RESULT_PATH}}|$RUN_DIR/result.json|g" \
+          "${consts.prompts_dir}/clarify-issue.md" > "$RUN_DIR/prompt.md"
+
+  - id: clarify
+    depends: fetch_issue
+    working_dir: ${params.WORKSPACE}
+    timeout_sec: 1800          # read-only exploration; 30 min is generous
+    retry_policy:
+      limit: 0
+      interval_sec: 0
+    continue_on:
+      failure: true            # report the outcome on the issue either way
+    run: ${consts.bin_dir}/run-claude.sh "$RUN_DIR/prompt.md" ${consts.budget_usd} "$RUN_DIR/claude-stream.jsonl"
+
+  - id: report
+    depends: clarify
+    working_dir: ${params.WORKSPACE}
+    run: |
+      set -u
+      result="$RUN_DIR/result.json"
+      body="$RUN_DIR/report.md"
+
+      result_status=$(jq -r '.status // "failed"' "$result" 2>/dev/null || echo failed)
+
+      # A missing report.md is only survivable for the failure path, where this
+      # step can write a useful one itself. For the other two the agent's own
+      # prose is the entire product, so treat its absence as a failed run.
+      if [ ! -s "$body" ] && [ "$result_status" != "failed" ]; then
+        echo "[report] status=$result_status but report.md is empty; treating as failed" >&2
+        result_status=failed
+      fi
+
+      case "$result_status" in
+        ready)
+          state="agent:ready-to-implement"
+          # The marker is the handoff contract: the implementer reads the newest
+          # comment carrying it and treats that as the brief, in preference to
+          # the raw issue body.
+          printf '\n<!-- agent:brief -->\n' >> "$body"
+          ;;
+        needs-clarification)
+          state="agent:revising"
+          # Indented to the block scalar's base so YAML strips it back to
+          # column 0; a here-doc line further left would end the scalar.
+          cat >> "$body" <<'EOF'
+
+      ---
+
+      Answer above, then relabel this issue `agent:todo`. The clarifier re-reads
+      the whole thread and either promotes it or asks a follow-up.
+
+      <!-- agent:questions -->
+      EOF
+          ;;
+        *)
+          state="agent:failed"
+          reason=$(jq -r '.error // ""' "$result" 2>/dev/null || echo "")
+          [ -n "$reason" ] || reason="The agent wrote no result.json. It was most likely killed, timed out after 30m, or exhausted its budget. Check claude-stream.jsonl."
+          cat > "$body" <<EOF
+      Clarification run \`${context.run.id}\` did not complete.
+
+      $reason
+
+      Working files: \`$RUN_DIR\`
+      EOF
+          ;;
+      esac
+
+      gh issue comment "${params.ISSUE_NUMBER}" --repo "${params.REPO}" --body-file "$body"
+      ${consts.bin_dir}/set-state.sh "${params.REPO}" "${params.ISSUE_NUMBER}" "$state"
+
+      # Surface a failed clarification as a red run in the dagu UI. `ready` and
+      # `needs-clarification` are both successful outcomes -- asking a question
+      # is the job, not a failure of it.
+      test "$result_status" != "failed"
+
+handler_on:
+  # Covers what `report` cannot reach: timeout, worker loss, a step dying before
+  # it runs. Without this the issue stays pinned to agent:clarifying and the
+  # clarify poller never sees it again.
+  failure:
+    run: |
+      if gh issue view "${params.ISSUE_NUMBER}" --repo "${params.REPO}" \
+           --json labels --jq '.labels[].name' | grep -qx "agent:clarifying"; then
+        ${consts.bin_dir}/set-state.sh "${params.REPO}" "${params.ISSUE_NUMBER}" "agent:failed"
+        gh issue comment "${params.ISSUE_NUMBER}" --repo "${params.REPO}" \
+          --body "Clarification run \`${context.run.id}\` failed before reporting. Log: ${context.paths.log_file}"
+      fi

@@ -1,21 +1,26 @@
 .DEFAULT_GOAL := help
-.PHONY: help up down restart logs ps open worker validate health trigger labels clean
+.PHONY: help up down restart logs ps open worker validate health state \
+        clarify implement respond close labels labels-prune clean
 
 # Host-side dagu CLI reads this project rather than ~/.config/dagu.
 export DAGU_HOME := $(CURDIR)
 
 COORDINATOR := 127.0.0.1:50055
-POLLER      := dags/sweatcharge-poller.yaml
-IMPLEMENTER := dags/agent-implement-issue.yaml
-HEALTHCHECK := dags/worker-health-check.yaml
 
 REPO      ?= cuongkane/sweatcharge
 WORKSPACE ?= /Users/lexuancuong/CUONG/SWC
-SKILL     ?= implement-sweatcharge-feature
+
+CLARIFY_SKILL   ?= clarify-sweatcharge-issue
+IMPLEMENT_SKILL ?= implement-sweatcharge-feature
+RESPOND_SKILL   ?= respond-sweatcharge-review
+
+# Every label in the state machine, in lifecycle order. `state` walks this list.
+STATES := agent:todo agent:clarifying agent:revising agent:ready-to-implement \
+          agent:implementing agent:reviewing agent:responding agent:finished agent:failed
 
 help: ## Show this help
 	@grep -hE '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) \
-		| awk 'BEGIN{FS=":.*?## "}{printf "  \033[36m%-10s\033[0m %s\n", $$1, $$2}'
+		| awk 'BEGIN{FS=":.*?## "}{printf "  \033[36m%-14s\033[0m %s\n", $$1, $$2}'
 
 ## -- Dagu in Docker (scheduler + web UI + coordinator) --
 
@@ -44,35 +49,87 @@ worker: ## Run the host worker in the FOREGROUND; keep this pane open
 	@echo "Host worker -> $(COORDINATOR). Ctrl-C to stop."
 	dagu worker --worker.coordinators=$(COORDINATOR) --worker.labels host=true
 
-## -- Authoring and manual runs --
+## -- Authoring and inspection --
 
 validate: ## Validate every DAG definition
-	dagu validate $(POLLER)
-	dagu validate $(IMPLEMENTER)
-	dagu validate $(HEALTHCHECK)
+	@for f in dags/*.yaml; do printf '%s: ' "$$f"; dagu validate "$$f" >/dev/null 2>&1 \
+		&& echo ok || { echo FAILED; dagu validate "$$f"; exit 1; }; done
 
 health: ## Prove the host worker is reachable, tooled and logged in
 	@docker compose exec -T dagu dagu enqueue worker-health-check
 	@echo "Enqueued. Watch the 'make worker' pane, or http://localhost:8525"
 
-trigger: ## Implement one issue now, bypassing the poll: make trigger ISSUE=42
-	@test -n "$(ISSUE)" || { echo "usage: make trigger ISSUE=<number>"; exit 1; }
-	@# Runs locally on this Mac (which has the full toolchain) rather than being
-	@# dispatched to the worker, and skips the agent:in-progress mutex.
-	dagu start $(IMPLEMENTER) -- \
-		REPO=$(REPO) WORKSPACE=$(WORKSPACE) SKILL=$(SKILL) ISSUE_NUMBER=$(ISSUE)
+state: ## Show every open issue, grouped by its agent:* state
+	@for s in $(STATES); do \
+		out=$$(gh issue list --repo $(REPO) --label "$$s" --state open --limit 100 \
+			--json number,title --jq '.[] | "    #\(.number) \(.title)"'); \
+		[ -z "$$out" ] || { printf '\033[36m%s\033[0m\n%s\n' "$$s" "$$out"; }; \
+	done
+	@bare=$$(gh issue list --repo $(REPO) --state open --limit 200 --json number,labels \
+		--jq '[.[] | select([.labels[].name] | any(startswith("agent:")) | not) | "#\(.number)"] | join(", ")'); \
+	[ -z "$$bare" ] || printf '\033[31munlabelled (no poller will see these)\033[0m\n    %s\n' "$$bare"
+
+## -- Manual runs --
+#
+# `dagu start` runs a DAG locally on this Mac, which already has the toolchain;
+# only the queue dispatches to the worker. That is why `health` uses
+# `dagu enqueue` and everything below uses `dagu start`.
+#
+# These bypass the poller, so they also bypass the label claim. The agent still
+# reports its outcome onto the issue, which will overwrite whatever label the
+# issue currently carries.
+
+clarify: ## Clarify one issue now: make clarify ISSUE=42
+	@test -n "$(ISSUE)" || { echo "usage: make clarify ISSUE=<number>"; exit 1; }
+	dagu start dags/agent-clarify-issue.yaml -- \
+		REPO=$(REPO) WORKSPACE=$(WORKSPACE) SKILL=$(CLARIFY_SKILL) ISSUE_NUMBER=$(ISSUE)
+
+implement: ## Implement one issue now: make implement ISSUE=42
+	@test -n "$(ISSUE)" || { echo "usage: make implement ISSUE=<number>"; exit 1; }
+	dagu start dags/agent-implement-issue.yaml -- \
+		REPO=$(REPO) WORKSPACE=$(WORKSPACE) SKILL=$(IMPLEMENT_SKILL) ISSUE_NUMBER=$(ISSUE)
+
+respond: ## Address review feedback now: make respond ISSUE=42 PR=7
+	@test -n "$(ISSUE)" -a -n "$(PR)" || { echo "usage: make respond ISSUE=<number> PR=<number>"; exit 1; }
+	dagu start dags/agent-respond-review.yaml -- \
+		REPO=$(REPO) WORKSPACE=$(WORKSPACE) SKILL=$(RESPOND_SKILL) \
+		ISSUE_NUMBER=$(ISSUE) PR_NUMBER=$(PR)
+
+close: ## Finish a merged issue now: make close ISSUE=42 PR=7
+	@test -n "$(ISSUE)" -a -n "$(PR)" || { echo "usage: make close ISSUE=<number> PR=<number>"; exit 1; }
+	dagu start dags/agent-close-issue.yaml -- \
+		REPO=$(REPO) WORKSPACE=$(WORKSPACE) ISSUE_NUMBER=$(ISSUE) PR_NUMBER=$(PR)
+
+## -- Repository setup --
 
 labels: ## Create the agent:* labels on $(REPO) (idempotent)
-	@gh label create "agent:todo"        --repo $(REPO) --color 0E8A16 --force \
-		--description "Queued for the implementation agent"
-	@gh label create "agent:in-progress" --repo $(REPO) --color FBCA04 --force \
-		--description "Agent is currently implementing this"
-	@gh label create "agent:done"        --repo $(REPO) --color 5319E7 --force \
-		--description "Agent opened a draft PR"
-	@gh label create "agent:needs-input" --repo $(REPO) --color D93F0B --force \
-		--description "Agent stopped on a blocking question"
-	@gh label create "agent:failed"      --repo $(REPO) --color B60205 --force \
-		--description "Agent run failed; see the run log"
+	@gh label create "agent:todo"               --repo $(REPO) --color 0E8A16 --force \
+		--description "Queued for the clarifier"
+	@gh label create "agent:clarifying"         --repo $(REPO) --color FBCA04 --force \
+		--description "The clarifier is reading this"
+	@gh label create "agent:revising"           --repo $(REPO) --color D93F0B --force \
+		--description "Waiting on you: answer the questions, then relabel agent:todo"
+	@gh label create "agent:ready-to-implement" --repo $(REPO) --color 1D76DB --force \
+		--description "Clarified. Queued for the implementer"
+	@gh label create "agent:implementing"       --repo $(REPO) --color FBCA04 --force \
+		--description "The implementer is building this"
+	@gh label create "agent:reviewing"          --repo $(REPO) --color 5319E7 --force \
+		--description "Pull request open and awaiting review"
+	@gh label create "agent:responding"         --repo $(REPO) --color FBCA04 --force \
+		--description "The responder is addressing review feedback"
+	@gh label create "agent:finished"           --repo $(REPO) --color CFD3D7 --force \
+		--description "Pull request merged and the worktree reclaimed"
+	@gh label create "agent:failed"             --repo $(REPO) --color B60205 --force \
+		--description "A run broke; the comment says where"
+
+labels-prune: ## Delete the labels retired in the agent-per-phase refactor
+	@echo "This removes agent:in-progress, agent:done and agent:needs-input from $(REPO),"
+	@echo "including from any issue still carrying them. Ctrl-C within 5s to abort."
+	@sleep 5
+	@for l in agent:in-progress agent:done agent:needs-input; do \
+		gh label delete "$$l" --repo $(REPO) --yes 2>/dev/null && echo "deleted $$l" \
+			|| echo "$$l not present"; \
+	done
 
 clean: ## Delete run history and logs (keeps DAG definitions)
 	rm -rf data logs && mkdir -p data logs

@@ -1,10 +1,20 @@
 type: graph
-description: Implement one GitHub issue with a Claude Code skill and open a draft PR
+description: Implement one clarified GitHub issue and open a pull request that closes it
 max_output_size: 10485760
 
-# Needs claude (macOS keychain auth), gh, git, jq and the checkout on disk.
-worker_selector:
-  host: "true"
+# Deliberately NO worker_selector, even though every step needs claude (macOS
+# keychain auth), gh, git, jq and the checkout on disk.
+#
+# A child DAG inherits the worker its caller is running on, and the pollers are
+# already pinned to host=true -- so these steps land on the Mac either way. If
+# this DAG declares its own selector as well, dagu tries to re-dispatch the
+# child through the coordinator from inside the worker and the step dies with
+# "no sub-workflow runner accepted request" (dagu 2.12). A worker-pinned parent
+# can only run a child inline.
+#
+# The cost is that this DAG must not be started with `dagu enqueue` on its own:
+# with no caller to inherit from it would run inside the toolless container.
+# Start it through a poller, or locally with `make implement ISSUE=<n>`.
 
 params:
   - name: REPO
@@ -25,12 +35,11 @@ params:
 
 consts:
   - prompts_dir: /Users/lexuancuong/CUONG/DAGU/prompts
+  - bin_dir: /Users/lexuancuong/CUONG/DAGU/bin
   - budget_usd: "15"
 
 env:
-  # Concurrency is 1, so a per-issue path is unambiguous and stays around for
-  # debugging after the run.
-  - RUN_DIR: /tmp/dagu-agent/${params.ISSUE_NUMBER}
+  - RUN_DIR: /tmp/dagu-agent/${params.ISSUE_NUMBER}/implement
 
 steps:
   - id: fetch_issue
@@ -38,20 +47,41 @@ steps:
     run: |
       set -eu
       mkdir -p "$RUN_DIR"
-      rm -f "$RUN_DIR/result.json"
+      rm -f "$RUN_DIR/result.json" "$RUN_DIR/report.md"
 
       gh issue view "${params.ISSUE_NUMBER}" --repo "${params.REPO}" \
-        --json number,title,body > "$RUN_DIR/issue.json"
+        --json number,title,body,comments > "$RUN_DIR/issue.json"
 
-      # The issue body is untrusted text. It only ever reaches the agent as a
-      # file, never interpolated into a shell command or into the prompt string.
-      jq -r '"# Issue #\(.number): \(.title)\n\n\(.body // "(no description)")"' \
-        "$RUN_DIR/issue.json" > "$RUN_DIR/brief.md"
+      # The clarifier's refined brief supersedes the raw issue body: it has
+      # already resolved the ambiguities and folded in the human's answers, and
+      # this agent is not allowed to ask anything. Fall back to the body only
+      # when the issue reached here without ever passing through clarification
+      # -- a hand-applied label, or `make implement`.
+      brief=$(jq -r '[.comments[] | select(.body | contains("<!-- agent:brief -->"))]
+                     | last | .body // empty' "$RUN_DIR/issue.json")
+
+      # The issue body and every comment are untrusted text. They only ever
+      # reach the agent as a file, never interpolated into a shell command or
+      # into the prompt string.
+      if [ -n "$brief" ]; then
+        echo "[fetch_issue] using the clarifier's refined brief" >&2
+        {
+          jq -r '"# Issue #\(.number): \(.title)"' "$RUN_DIR/issue.json"
+          printf '\n\n'
+          printf '%s\n' "$brief"
+        } > "$RUN_DIR/brief.md"
+      else
+        echo "[fetch_issue] WARNING: no <!-- agent:brief --> comment; using the raw issue body" >&2
+        jq -r '"# Issue #\(.number): \(.title)\n\n\(.body // "(no description)")"' \
+          "$RUN_DIR/issue.json" > "$RUN_DIR/brief.md"
+      fi
 
       sed -e "s|{{SKILL}}|${params.SKILL}|g" \
           -e "s|{{REPO}}|${params.REPO}|g" \
+          -e "s|{{WORKSPACE}}|${params.WORKSPACE}|g" \
           -e "s|{{ISSUE_NUMBER}}|${params.ISSUE_NUMBER}|g" \
           -e "s|{{BRIEF_PATH}}|$RUN_DIR/brief.md|g" \
+          -e "s|{{REPORT_PATH}}|$RUN_DIR/report.md|g" \
           -e "s|{{RESULT_PATH}}|$RUN_DIR/result.json|g" \
           "${consts.prompts_dir}/implement-issue.md" > "$RUN_DIR/prompt.md"
 
@@ -64,13 +94,7 @@ steps:
       interval_sec: 0          # required by the schema even when retries are off
     continue_on:
       failure: true            # report the outcome on the issue either way
-    run: |
-      claude -p "$(cat "$RUN_DIR/prompt.md")" \
-        --permission-mode bypassPermissions \
-        --model opus \
-        --output-format json \
-        --max-budget-usd ${consts.budget_usd} \
-        > "$RUN_DIR/claude-output.json"
+    run: ${consts.bin_dir}/run-claude.sh "$RUN_DIR/prompt.md" ${consts.budget_usd} "$RUN_DIR/claude-stream.jsonl"
 
   - id: report
     depends: implement
@@ -78,68 +102,90 @@ steps:
     run: |
       set -u
       result="$RUN_DIR/result.json"
-      body="$RUN_DIR/comment.md"
+      body="$RUN_DIR/report.md"
 
-      # A missing or malformed result.json is itself a failure, not a crash.
-      status=$(jq -r '.status // "failed"' "$result" 2>/dev/null || echo failed)
+      result_status=$(jq -r '.status // "failed"' "$result" 2>/dev/null || echo failed)
       field() { jq -r "$1 // \"\"" "$result" 2>/dev/null || echo ""; }
 
-      # No result.json at all means the agent died before it could report, which
-      # is the least self-explanatory failure and needs a hint of its own.
-      reason=$(field .error)
-      [ -n "$reason" ] || reason="The agent wrote no result.json. It was most likely
-      killed, timed out after 2h, or exhausted its budget. Check claude-output.json."
+      if [ ! -s "$body" ] && [ "$result_status" != "failed" ]; then
+        echo "[report] status=$result_status but report.md is empty; treating as failed" >&2
+        result_status=failed
+      fi
 
-      # Built with a here-doc rather than shell string concatenation so the
-      # comment's own line breaks and indentation survive intact.
-      case "$status" in
+      case "$result_status" in
         completed)
-          label="agent:done"
-          cat > "$body" <<EOF
-      Draft PR: $(field .pr_url)
+          pr_url=$(field .pr_url)
+          pr_number=${pr_url##*/}
 
-      $(field .summary)
-      EOF
+          # A completed run with no usable PR URL is a failed run. The agent is
+          # told never to invent one, and the delivery poller cannot do anything
+          # with an issue whose PR it cannot find.
+          case "$pr_number" in
+            ''|*[!0-9]*)
+              echo "[report] status=completed but pr_url is unusable ('$pr_url')" >&2
+              result_status=failed
+              ;;
+            *)
+              state="agent:reviewing"
+              # This marker is how the delivery poller finds the PR. It is
+              # written here, from GitHub's own URL, rather than by the agent --
+              # the one fact in this pipeline that must not be paraphrased.
+              printf '\n<!-- agent:pr=%s -->\n' "$pr_number" >> "$body"
+              ;;
+          esac
           ;;
         blocked)
-          label="agent:needs-input"
-          cat > "$body" <<EOF
-      The agent stopped on a blocking question:
+          # Rare by design: this agent runs with no human in the loop, so a
+          # blocker means clarification missed something material. Send it back
+          # through the clarifier rather than guessing. The worktree is left in
+          # place so the next attempt can see how far this one got.
+          state="agent:revising"
+          cat >> "$body" <<'EOF'
 
-      > $(field .question)
+      ---
 
-      Answer it in a comment, then relabel this issue \`agent:todo\`.
+      The implementer stopped on a blocker that clarification did not cover.
+      Answer above, then relabel this issue `agent:todo` to re-run clarification.
+
+      <!-- agent:questions -->
       EOF
           ;;
         *)
-          label="agent:failed"
-          cat > "$body" <<EOF
-      Run \`${context.run.id}\` did not complete.
+          # Anything else -- including a garbled status the agent invented --
+          # is a failure. Falling through with $state unset would trip `set -u`
+          # and report nothing at all.
+          result_status=failed
+          ;;
+      esac
+
+      if [ "$result_status" = "failed" ]; then
+        state="agent:failed"
+        reason=$(field .error)
+        [ -n "$reason" ] || reason="The agent wrote no result.json. It was most likely killed, timed out after 2h, or exhausted its budget. Check claude-stream.jsonl."
+        cat > "$body" <<EOF
+      Implementation run \`${context.run.id}\` did not complete.
 
       $reason
 
       Working files: \`$RUN_DIR\`
       EOF
-          ;;
-      esac
+      fi
 
       gh issue comment "${params.ISSUE_NUMBER}" --repo "${params.REPO}" --body-file "$body"
-      gh issue edit "${params.ISSUE_NUMBER}" --repo "${params.REPO}" \
-        --remove-label "agent:in-progress" --add-label "$label"
+      ${consts.bin_dir}/set-state.sh "${params.REPO}" "${params.ISSUE_NUMBER}" "$state"
 
       # Surface a non-completed outcome as a red run in the dagu UI.
-      test "$status" = "completed"
+      test "$result_status" = "completed"
 
 handler_on:
   # Covers the paths `report` cannot reach: timeout, worker loss, a step dying
-  # before it runs. Without this the issue would stay pinned to agent:in-progress
-  # and block every later poll.
+  # before it runs. Without this the issue would stay pinned to
+  # agent:implementing and the implement poller would never see it again.
   failure:
     run: |
       if gh issue view "${params.ISSUE_NUMBER}" --repo "${params.REPO}" \
-           --json labels --jq '.labels[].name' | grep -qx "agent:in-progress"; then
-        gh issue edit "${params.ISSUE_NUMBER}" --repo "${params.REPO}" \
-          --remove-label "agent:in-progress" --add-label "agent:failed"
+           --json labels --jq '.labels[].name' | grep -qx "agent:implementing"; then
+        ${consts.bin_dir}/set-state.sh "${params.REPO}" "${params.ISSUE_NUMBER}" "agent:failed"
         gh issue comment "${params.ISSUE_NUMBER}" --repo "${params.REPO}" \
-          --body "Run \`${context.run.id}\` failed before reporting. Log: ${context.paths.log_file}"
+          --body "Implementation run \`${context.run.id}\` failed before reporting. Log: ${context.paths.log_file}"
       fi

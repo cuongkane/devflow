@@ -1,0 +1,125 @@
+type: graph
+description: Watch cuongkane/sweatcharge pull requests under review, and respond or finish
+schedule: "*/10 * * * *"
+overlap_policy: skip
+
+worker_selector:
+  host: "true"
+
+# One poller, two agents.
+#
+# The responder and the closer are separate agents with separate DAGs, but they
+# share a single poller rather than getting one each. Both would have to query
+# agent:reviewing -- it is the only label that says "a pull request is open for
+# this issue" -- and two schedules racing on one label is exactly the collision
+# the label-as-lock design exists to prevent. So the queue is read once, the
+# pull request is inspected once, and the decision is dispatched to whichever
+# agent it belongs to.
+#
+# The interesting problem this solves: the agent posts as the repository
+# owner's own gh login, so "was that comment written by a human?" cannot be
+# answered from the author. bin/pr-triage.jq answers it from an
+# `<!-- agent:responded -->` marker instead, and treats review threads as
+# outstanding only when their newest comment is newer than that marker -- which
+# is what stops a thread the agent replied to but did not resolve from
+# re-triggering it every ten minutes forever.
+
+consts:
+  - repo: cuongkane/sweatcharge
+  - workspace: /Users/lexuancuong/CUONG/SWC
+  - skill: respond-sweatcharge-review
+  - bin_dir: /Users/lexuancuong/CUONG/DAGU/bin
+
+env:
+  - STATE_DIR: /tmp/dagu-agent/delivery-poll
+
+steps:
+  - id: pick_issue
+    run: ${consts.bin_dir}/pick-oldest.sh ${consts.repo} agent:reviewing agent:responding
+    output: ISSUE_NUMBER
+
+  # No precondition on purpose. dagu leaves an unresolved reference as literal
+  # text rather than an empty string, so a skipped step here would leak the
+  # string "${ACTION}" into every precondition below. triage-issue.sh handles
+  # "none" itself and returns action=none.
+  - id: triage
+    depends: pick_issue
+    run: |
+      set -eu
+      mkdir -p "$STATE_DIR"
+      ${consts.bin_dir}/triage-issue.sh ${consts.repo} "${ISSUE_NUMBER}" > "$STATE_DIR/decision.json"
+      echo "[triage] #${ISSUE_NUMBER} $(jq -c '.' "$STATE_DIR/decision.json")" >&2
+      jq -r '.action' "$STATE_DIR/decision.json"
+    output: ACTION
+
+  - id: pick_pr
+    depends: triage
+    run: jq -r '.pr // "none"' "$STATE_DIR/decision.json"
+    output: PR_NUMBER
+
+  - id: claim_respond
+    depends: pick_pr
+    preconditions:
+      - condition: 'test "${ACTION}" = "respond"'
+    run: |
+      set -u
+      if ${consts.bin_dir}/relabel.sh ${consts.repo} "${ISSUE_NUMBER}" agent:reviewing agent:responding; then
+        echo yes
+      else
+        echo no
+      fi
+    output: CLAIMED
+    continue_on: skipped
+
+  - id: dispatch_respond
+    depends: claim_respond
+    preconditions:
+      - condition: 'test "${CLAIMED}" = "yes"'
+    action: dag.run
+    with:
+      dag: agent-respond-review
+      params:
+        REPO: ${consts.repo}
+        WORKSPACE: ${consts.workspace}
+        SKILL: ${consts.skill}
+        ISSUE_NUMBER: "${ISSUE_NUMBER}"
+        PR_NUMBER: "${PR_NUMBER}"
+    continue_on: skipped
+
+  # Deliberately unclaimed -- see the header of agent-close-issue.yaml. Every
+  # step of it is idempotent, so a run that dies is simply retried next tick.
+  - id: dispatch_close
+    depends: pick_pr
+    preconditions:
+      - condition: 'test "${ACTION}" = "close"'
+    action: dag.run
+    with:
+      dag: agent-close-issue
+      params:
+        REPO: ${consts.repo}
+        WORKSPACE: ${consts.workspace}
+        ISSUE_NUMBER: "${ISSUE_NUMBER}"
+        PR_NUMBER: "${PR_NUMBER}"
+    continue_on: skipped
+
+  # `abandoned` is a pull request closed without merging; `orphan` is an issue
+  # labelled agent:reviewing that has no PR marker to follow. Neither is
+  # something an agent should resolve on its own, and leaving either on
+  # agent:reviewing would make this poller re-inspect it every ten minutes for
+  # as long as it exists.
+  - id: stop_dead_end
+    depends: pick_pr
+    preconditions:
+      - condition: 'test "${ACTION}" = "abandoned" || test "${ACTION}" = "orphan"'
+    run: |
+      set -eu
+      if [ "${ACTION}" = "abandoned" ]; then
+        note="Pull request #${PR_NUMBER} was closed without being merged, so this issue is not delivered.
+      Reopen the pull request, or relabel this issue \`agent:todo\` to start again from clarification."
+      else
+        note="This issue is labelled \`agent:reviewing\` but carries no \`<!-- agent:pr=N -->\` marker,
+      so there is no pull request to follow. Relabel it \`agent:todo\` to start again from clarification."
+      fi
+      gh issue comment "${ISSUE_NUMBER}" --repo ${consts.repo} --body "$note"
+      ${consts.bin_dir}/set-state.sh ${consts.repo} "${ISSUE_NUMBER}" agent:failed
+    continue_on: skipped

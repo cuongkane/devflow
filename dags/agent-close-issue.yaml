@@ -1,0 +1,112 @@
+type: graph
+description: Finish one issue whose pull request was merged, and reclaim its worktree
+max_output_size: 10485760
+
+# No worker_selector on purpose -- see the note in agent-implement-issue.yaml.
+#
+# This is the one agent in the pipeline with no model behind it. Closing an
+# issue and removing a worktree are exact, checkable operations; a language
+# model could only make them less reliable and more expensive.
+#
+# It is also the one agent that does not claim its issue with a working label.
+# Every step is idempotent, the delivery poller is the only thing that dispatches
+# it, and that poller cannot overlap itself -- so leaving the issue on
+# agent:reviewing means a run that dies simply gets retried on the next tick
+# instead of stranding the issue in a state nothing polls.
+
+params:
+  - name: REPO
+    type: string
+    required: true
+    description: owner/name of the GitHub repository
+  - name: WORKSPACE
+    type: string
+    required: true
+    description: absolute path to the local checkout
+  - name: ISSUE_NUMBER
+    type: string
+    required: true
+  - name: PR_NUMBER
+    type: string
+    required: true
+
+consts:
+  - bin_dir: /Users/lexuancuong/CUONG/DAGU/bin
+
+env:
+  - RUN_DIR: /tmp/dagu-agent/${params.ISSUE_NUMBER}/close
+
+steps:
+  - id: verify_merged
+    working_dir: ${params.WORKSPACE}
+    run: |
+      set -eu
+      mkdir -p "$RUN_DIR"
+      ${consts.bin_dir}/pr-state.sh "${params.REPO}" "${params.PR_NUMBER}" > "$RUN_DIR/pr.json"
+
+      merged=$(jq -r '.merged' "$RUN_DIR/pr.json")
+      if [ "$merged" != "true" ]; then
+        echo "[verify_merged] PR #${params.PR_NUMBER} is not merged (state=$(jq -r '.state' "$RUN_DIR/pr.json"))" >&2
+        echo "[verify_merged] refusing to close #${params.ISSUE_NUMBER}" >&2
+        exit 1
+      fi
+
+      jq -r '.headRefName' "$RUN_DIR/pr.json" > "$RUN_DIR/head-ref"
+      echo "[verify_merged] PR #${params.PR_NUMBER} merged at $(jq -r '.mergedAt' "$RUN_DIR/pr.json")" >&2
+
+  - id: finish_issue
+    depends: verify_merged
+    working_dir: ${params.WORKSPACE}
+    run: |
+      set -eu
+      url=$(jq -r '.url' "$RUN_DIR/pr.json")
+
+      # `Closes #N` in the pull request body means GitHub has almost certainly
+      # closed the issue already. Closing it again is a no-op; not checking
+      # would make this step fail on the normal path.
+      state=$(gh issue view "${params.ISSUE_NUMBER}" --repo "${params.REPO}" --json state --jq '.state')
+      if [ "$state" = "OPEN" ]; then
+        echo "[finish_issue] issue still open -- the PR body was missing its Closes line" >&2
+        gh issue close "${params.ISSUE_NUMBER}" --repo "${params.REPO}" \
+          --reason completed --comment "Closed by merged pull request $url."
+      fi
+
+      ${consts.bin_dir}/set-state.sh "${params.REPO}" "${params.ISSUE_NUMBER}" "agent:finished"
+
+  - id: reclaim_worktree
+    depends: finish_issue
+    working_dir: ${params.WORKSPACE}
+    continue_on:
+      failure: true          # the issue is already finished; cleanup is a courtesy
+    run: |
+      set -eu
+      head_ref=$(cat "$RUN_DIR/head-ref")
+
+      # Look the worktree up by branch rather than reconstructing the path from
+      # the slug convention: the skill is free to add a suffix when a name
+      # collides, and git already knows the answer exactly.
+      path=$(git -C "${params.WORKSPACE}" worktree list --porcelain \
+        | awk -v ref="refs/heads/$head_ref" '
+            /^worktree / { p = substr($0, 10) }
+            $0 == "branch " ref { print p; exit }')
+
+      if [ -z "$path" ]; then
+        echo "[reclaim_worktree] no worktree holds $head_ref; nothing to remove" >&2
+      elif [ -n "$(git -C "$path" status --porcelain 2>/dev/null)" ]; then
+        echo "[reclaim_worktree] $path has uncommitted changes; keeping it" >&2
+      else
+        git -C "${params.WORKSPACE}" worktree remove "$path"
+        echo "[reclaim_worktree] removed $path" >&2
+      fi
+
+      git -C "${params.WORKSPACE}" worktree prune
+
+      # -d, never -D. A squash or rebase merge leaves the branch unmerged as far
+      # as git is concerned, so this refuses and the branch survives -- which is
+      # the right outcome. Deleting it would discard the only local copy of the
+      # commits. The remote branch is left to GitHub's own delete-on-merge.
+      if git -C "${params.WORKSPACE}" branch -d "$head_ref" 2>/dev/null; then
+        echo "[reclaim_worktree] deleted local branch $head_ref" >&2
+      else
+        echo "[reclaim_worktree] kept local branch $head_ref (not fast-forward merged)" >&2
+      fi

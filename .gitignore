@@ -12,3 +12,4 @@ base.yaml
 
 .env
 .DS_Store
+bin/

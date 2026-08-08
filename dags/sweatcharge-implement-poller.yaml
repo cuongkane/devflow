@@ -1,0 +1,56 @@
+type: graph
+description: Implement cuongkane/sweatcharge issues labelled agent:ready-to-implement
+schedule: "*/10 * * * *"
+overlap_policy: skip
+
+worker_selector:
+  host: "true"
+
+# This DAG is what serialises implementation, and it does so without a
+# cross-issue mutex label. It claims exactly one issue per tick, the child runs
+# inline on this worker, and `overlap_policy: skip` means the next tick is
+# dropped while that child is still going. So at most one implementation exists
+# at a time -- which matters, because `make test-ci` in the target repo uses
+# fixed Compose project and port names and parallel runs would collide.
+#
+# Raise this ceiling by fixing those names first, then letting the poller claim
+# more than one issue per tick.
+
+consts:
+  - repo: cuongkane/sweatcharge
+  - workspace: /Users/lexuancuong/CUONG/SWC
+  - skill: implement-sweatcharge-feature
+  - bin_dir: /Users/lexuancuong/CUONG/DAGU/bin
+
+steps:
+  - id: pick_issue
+    run: ${consts.bin_dir}/pick-oldest.sh ${consts.repo} agent:ready-to-implement agent:implementing
+    output: ISSUE_NUMBER
+
+  - id: claim
+    depends: pick_issue
+    preconditions:
+      - condition: 'test "${ISSUE_NUMBER}" != "none"'
+    run: |
+      set -u
+      if ${consts.bin_dir}/relabel.sh ${consts.repo} "${ISSUE_NUMBER}" agent:ready-to-implement agent:implementing; then
+        echo yes
+      else
+        echo no
+      fi
+    output: CLAIMED
+    continue_on: skipped
+
+  - id: dispatch
+    depends: claim
+    preconditions:
+      - condition: 'test "${CLAIMED}" = "yes"'
+    action: dag.run
+    with:
+      dag: agent-implement-issue
+      params:
+        REPO: ${consts.repo}
+        WORKSPACE: ${consts.workspace}
+        SKILL: ${consts.skill}
+        ISSUE_NUMBER: "${ISSUE_NUMBER}"
+    continue_on: skipped

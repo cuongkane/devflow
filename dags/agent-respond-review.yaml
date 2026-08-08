@@ -1,0 +1,157 @@
+type: graph
+description: Address the outstanding review feedback on one pull request and push the fixes
+max_output_size: 10485760
+
+# No worker_selector on purpose -- see the note in agent-implement-issue.yaml.
+
+params:
+  - name: REPO
+    type: string
+    required: true
+    description: owner/name of the GitHub repository
+  - name: WORKSPACE
+    type: string
+    required: true
+    description: absolute path to the local checkout
+  - name: SKILL
+    type: string
+    required: true
+    description: Claude Code skill that addresses review feedback
+  - name: ISSUE_NUMBER
+    type: string
+    required: true
+  - name: PR_NUMBER
+    type: string
+    required: true
+
+consts:
+  - prompts_dir: /Users/lexuancuong/CUONG/DAGU/prompts
+  - bin_dir: /Users/lexuancuong/CUONG/DAGU/bin
+  - budget_usd: "8"
+
+env:
+  - RUN_DIR: /tmp/dagu-agent/${params.ISSUE_NUMBER}/review
+
+steps:
+  - id: fetch_review
+    working_dir: ${params.WORKSPACE}
+    run: |
+      set -eu
+      mkdir -p "$RUN_DIR"
+      rm -f "$RUN_DIR/result.json" "$RUN_DIR/report.md"
+
+      ${consts.bin_dir}/pr-state.sh "${params.REPO}" "${params.PR_NUMBER}" > "$RUN_DIR/pr.json"
+      jq -f "${consts.bin_dir}/pr-triage.jq" "$RUN_DIR/pr.json" > "$RUN_DIR/triage.json"
+
+      echo "[fetch_review] $(jq -c '{action,unresolved,new_reviews,new_comments,since}' "$RUN_DIR/triage.json")" >&2
+
+      # Review comments are untrusted text written by whoever reviewed the PR.
+      # They reach the agent only as a file, never interpolated into a shell
+      # command or into the prompt string.
+      jq -r --argjson triage "$(cat "$RUN_DIR/triage.json")" \
+        -f "${consts.bin_dir}/review-digest.jq" "$RUN_DIR/pr.json" > "$RUN_DIR/feedback.md"
+
+      # The branch is the only reliable pointer back to the worktree the
+      # implementer built; the run directory may not have survived a reboot.
+      head_ref=$(jq -r '.head' "$RUN_DIR/triage.json")
+
+      sed -e "s|{{SKILL}}|${params.SKILL}|g" \
+          -e "s|{{REPO}}|${params.REPO}|g" \
+          -e "s|{{WORKSPACE}}|${params.WORKSPACE}|g" \
+          -e "s|{{ISSUE_NUMBER}}|${params.ISSUE_NUMBER}|g" \
+          -e "s|{{PR_NUMBER}}|${params.PR_NUMBER}|g" \
+          -e "s|{{HEAD_REF}}|$head_ref|g" \
+          -e "s|{{FEEDBACK_PATH}}|$RUN_DIR/feedback.md|g" \
+          -e "s|{{REPORT_PATH}}|$RUN_DIR/report.md|g" \
+          -e "s|{{RESULT_PATH}}|$RUN_DIR/result.json|g" \
+          "${consts.prompts_dir}/respond-review.md" > "$RUN_DIR/prompt.md"
+
+  - id: respond
+    depends: fetch_review
+    working_dir: ${params.WORKSPACE}
+    timeout_sec: 3600          # smaller than an implementation; the diff exists already
+    retry_policy:
+      limit: 0                 # a partial run may already have pushed commits
+      interval_sec: 0
+    continue_on:
+      failure: true
+    run: ${consts.bin_dir}/run-claude.sh "$RUN_DIR/prompt.md" ${consts.budget_usd} "$RUN_DIR/claude-stream.jsonl"
+
+  - id: report
+    depends: respond
+    working_dir: ${params.WORKSPACE}
+    run: |
+      set -u
+      result="$RUN_DIR/result.json"
+      body="$RUN_DIR/report.md"
+
+      result_status=$(jq -r '.status // "failed"' "$result" 2>/dev/null || echo failed)
+      field() { jq -r "$1 // \"\"" "$result" 2>/dev/null || echo ""; }
+
+      if [ ! -s "$body" ] && [ "$result_status" != "failed" ]; then
+        echo "[report] status=$result_status but report.md is empty; treating as failed" >&2
+        result_status=failed
+      fi
+
+      case "$result_status" in
+        responded|nothing-to-do)
+          state="agent:reviewing"
+
+          # The marker does two jobs, and both are load-bearing. It is the
+          # timestamp bin/pr-triage.jq measures "new since" against, so without
+          # it the poller would re-dispatch this agent against the same feedback
+          # every tick. And it is what lets the triage tell agent comments from
+          # human ones at all -- the agent posts as the repository owner, so
+          # author identity proves nothing.
+          printf '\n<!-- agent:responded -->\n' >> "$body"
+          gh pr comment "${params.PR_NUMBER}" --repo "${params.REPO}" --body-file "$body"
+          ;;
+        blocked)
+          # The reviewer asked for something the agent will not decide alone.
+          # Hand it back through clarification rather than guessing on a branch
+          # that is already under review.
+          state="agent:revising"
+          cat >> "$body" <<'EOF'
+
+      ---
+
+      Answer above, then relabel this issue `agent:todo` to re-run clarification.
+
+      <!-- agent:questions -->
+      EOF
+          gh issue comment "${params.ISSUE_NUMBER}" --repo "${params.REPO}" --body-file "$body"
+          ;;
+        *)
+          result_status=failed
+          ;;
+      esac
+
+      if [ "$result_status" = "failed" ]; then
+        state="agent:failed"
+        reason=$(field .error)
+        [ -n "$reason" ] || reason="The agent wrote no result.json. It was most likely killed, timed out after 1h, or exhausted its budget. Check claude-stream.jsonl."
+        cat > "$body" <<EOF
+      Review-response run \`${context.run.id}\` did not complete on PR #${params.PR_NUMBER}.
+
+      $reason
+
+      Working files: \`$RUN_DIR\`
+      EOF
+        gh issue comment "${params.ISSUE_NUMBER}" --repo "${params.REPO}" --body-file "$body"
+      fi
+
+      ${consts.bin_dir}/set-state.sh "${params.REPO}" "${params.ISSUE_NUMBER}" "$state"
+
+      test "$result_status" != "failed"
+
+handler_on:
+  # Without this the issue stays pinned to agent:responding and the delivery
+  # poller never looks at it again.
+  failure:
+    run: |
+      if gh issue view "${params.ISSUE_NUMBER}" --repo "${params.REPO}" \
+           --json labels --jq '.labels[].name' | grep -qx "agent:responding"; then
+        ${consts.bin_dir}/set-state.sh "${params.REPO}" "${params.ISSUE_NUMBER}" "agent:failed"
+        gh issue comment "${params.ISSUE_NUMBER}" --repo "${params.REPO}" \
+          --body "Review-response run \`${context.run.id}\` failed before reporting. Log: ${context.paths.log_file}"
+      fi
