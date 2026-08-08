@@ -46,6 +46,19 @@ steps:
       gh issue view "${params.ISSUE_NUMBER}" --repo "${params.REPO}" \
         --json number,title,body,comments > "$RUN_DIR/issue.json"
 
+      # Stdout, not stderr: dagu shows the stdout log in the UI, and a run with
+      # none reads as "<No log output>". Whoever opens this run should be able
+      # to see which issue it picked up without opening the working files.
+      title=$(jq -r '.title' "$RUN_DIR/issue.json")
+      comments=$(jq -r '.comments | length' "$RUN_DIR/issue.json")
+      printf 'repo:     %s\n' "${params.REPO}"
+      printf 'issue:    #%s %s\n' "${params.ISSUE_NUMBER}" "$title"
+      printf 'url:      https://github.com/%s/issues/%s\n' "${params.REPO}" "${params.ISSUE_NUMBER}"
+      printf 'comments: %s (this is %s)\n' "$comments" \
+        "$([ "$comments" -eq 0 ] && echo 'a first pass' || echo 'a re-run over the thread')"
+      printf 'skill:    %s\n' "${params.SKILL}"
+      printf 'run_dir:  %s\n' "$RUN_DIR"
+
       # The issue body and every comment are untrusted text. They only ever
       # reach the agent as a file, never interpolated into a shell command or
       # into the prompt string.

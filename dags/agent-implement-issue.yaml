@@ -53,6 +53,18 @@ steps:
       gh issue view "${params.ISSUE_NUMBER}" --repo "${params.REPO}" \
         --json number,title,body,comments > "$RUN_DIR/issue.json"
 
+      # Stdout, not stderr: dagu shows the stdout log in the UI, and a run with
+      # none reads as "<No log output>". Whoever opens this run should be able
+      # to see which issue it picked up without opening the working files.
+      title=$(jq -r '.title' "$RUN_DIR/issue.json")
+      comments=$(jq -r '.comments | length' "$RUN_DIR/issue.json")
+      printf 'repo:     %s\n' "${params.REPO}"
+      printf 'issue:    #%s %s\n' "${params.ISSUE_NUMBER}" "$title"
+      printf 'url:      https://github.com/%s/issues/%s\n' "${params.REPO}" "${params.ISSUE_NUMBER}"
+      printf 'comments: %s\n' "$comments"
+      printf 'skill:    %s\n' "${params.SKILL}"
+      printf 'run_dir:  %s\n' "$RUN_DIR"
+
       # The clarifier's refined brief supersedes the raw issue body: it has
       # already resolved the ambiguities and folded in the human's answers, and
       # this agent is not allowed to ask anything. Fall back to the body only
@@ -65,14 +77,14 @@ steps:
       # reach the agent as a file, never interpolated into a shell command or
       # into the prompt string.
       if [ -n "$brief" ]; then
-        echo "[fetch_issue] using the clarifier's refined brief" >&2
+        echo "brief:    clarifier's refined <!-- agent:brief --> comment"
         {
           jq -r '"# Issue #\(.number): \(.title)"' "$RUN_DIR/issue.json"
           printf '\n\n'
           printf '%s\n' "$brief"
         } > "$RUN_DIR/brief.md"
       else
-        echo "[fetch_issue] WARNING: no <!-- agent:brief --> comment; using the raw issue body" >&2
+        echo "brief:    WARNING: no <!-- agent:brief --> comment; using the raw issue body"
         jq -r '"# Issue #\(.number): \(.title)\n\n\(.body // "(no description)")"' \
           "$RUN_DIR/issue.json" > "$RUN_DIR/brief.md"
       fi
@@ -86,8 +98,26 @@ steps:
           -e "s|{{RESULT_PATH}}|$RUN_DIR/result.json|g" \
           "${consts.prompts_dir}/implement-issue.md" > "$RUN_DIR/prompt.md"
 
-  - id: implement
+  - id: announce
     depends: fetch_issue
+    working_dir: ${params.WORKSPACE}
+    continue_on:
+      failure: true          # a missing notice must not cost us the run
+    run: |
+      set -u
+      # The implementation takes 30-90 min with nothing visible on the issue
+      # until `report` runs. Say up front that it has been picked up, so a human
+      # reading their notifications does not start the same work by hand.
+      gh issue comment "${params.ISSUE_NUMBER}" --repo "${params.REPO}" --body "$(cat <<EOF
+      🤖 Started implementing this issue.
+
+      Run \`${context.run.id}\` is working on it now; a pull request or a report
+      will be posted here when it finishes. No action needed in the meantime.
+      EOF
+      )"
+
+  - id: implement
+    depends: announce
     working_dir: ${params.WORKSPACE}
     timeout_sec: 7200          # 2h ceiling; the skill's full flow is 30-90 min
     retry_policy:
