@@ -52,20 +52,43 @@ perfect.
 
 ### ready
 
-Write to `{{REPORT_PATH}}` the refined brief, in markdown. **The implementer
-reads this and not the original issue**, so everything it needs must be here:
+Write to `{{REPORT_PATH}}` a **concise spec** in markdown — not a report. **The
+implementer reads this and not the original issue**, so everything it needs must
+be here, but a human also reads it on the issue and will not read a wall of text.
 
-- Problem and desired outcome
-- Current behaviour, as observed in the code
-- Proposed user-visible behaviour
-- Scope boundaries — explicitly, what is out of scope
-- Backend and frontend surfaces likely touched, with file or module pointers
-- Constraints, edge cases, and error paths
-- Acceptance criteria, one checkable statement per line
-- Facts (verified in the repository) separated from assumptions you made
+**Hard budget: 40 lines.** Use these sections, in this order, dropping any that
+carries nothing:
 
-Fold in every answer the human has already given. Do not make it longer than the
-work justifies; a small change gets a short brief.
+```markdown
+## Problem
+What the user cannot do today. 1-3 sentences.
+
+## Requirements
+- Imperative, user-visible statements. 5 max. Include the failure path.
+
+## Out of scope
+- Only what the issue implied but should not be built now.
+
+## Pointers
+- `path/to/file:symbol` — what it does now, what changes.
+
+## Acceptance criteria
+- [ ] One checkable assertion per line.
+
+## Assumptions
+- <decision made without asking> — <what breaks if wrong>.
+```
+
+Rules:
+
+- Requirements say what to build; acceptance criteria say how to check it. Never
+  write the same sentence in both.
+- Pointers must cite files you actually opened — that section is what saves the
+  implementer the exploration, so it earns its lines.
+- Fold in every answer the human has already given, silently, as a requirement
+  or a fact. Do not transcribe the Q&A; the thread is directly above your comment.
+- No preamble, no restating the issue, no headings added for completeness. A
+  small change gets a four-line brief.
 
 ### needs-clarification
 
