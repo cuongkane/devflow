@@ -18,7 +18,7 @@ params:
   - name: SKILL
     type: string
     required: true
-    description: Claude Code skill that performs the clarification
+    description: Coding-agent skill that performs the clarification
   - name: ISSUE_NUMBER
     type: string
     required: true
@@ -26,6 +26,7 @@ params:
 consts:
   - prompts_dir: /Users/lexuancuong/CUONG/DAGU/prompts
   - bin_dir: /Users/lexuancuong/CUONG/DAGU/bin
+  - agent_runner: /Users/lexuancuong/CUONG/DAGU/run-agent.sh
   - budget_usd: "4"
 
 env:
@@ -75,7 +76,7 @@ steps:
       interval_sec: 0
     continue_on:
       failure: true            # report the outcome on the issue either way
-    run: ${consts.bin_dir}/run-claude.sh "$RUN_DIR/prompt.md" ${consts.budget_usd} "$RUN_DIR/claude-stream.jsonl"
+    run: ${consts.agent_runner} "$RUN_DIR/prompt.md" ${consts.budget_usd} "$RUN_DIR/agent-stream.jsonl"
 
   - id: report
     depends: clarify
@@ -120,7 +121,7 @@ steps:
         *)
           state="agent:failed"
           reason=$(jq -r '.error // ""' "$result" 2>/dev/null || echo "")
-          [ -n "$reason" ] || reason="The agent wrote no result.json. It was most likely killed, timed out after 30m, or exhausted its budget. Check claude-stream.jsonl."
+          [ -n "$reason" ] || reason="The agent wrote no result.json. It was most likely killed or timed out after 30m. Check agent-stream.jsonl."
           cat > "$body" <<EOF
       Clarification run \`${context.run.id}\` did not complete.
 

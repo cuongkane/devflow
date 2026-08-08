@@ -5,9 +5,19 @@ way: one asks what you left out, one builds it, one answers your review, one
 tidies up after the merge.
 
 Each agent is a separate DAG with its own poller, its own prompt, and its own
-Claude Code skill. None of them knows the others exist. The **issue label is the
+coding-agent skill. None of them knows the others exist. The **issue label is the
 entire interface between them** — an agent claims work by taking a label, and
 hands it on by setting a different one.
+
+The coding-agent CLI is selected once in `agent.yaml`:
+
+```yaml
+agent: codex
+```
+
+Change it to `agent: claude` to switch every AI-backed stage. Restart the host
+worker after changing it. Both values require the corresponding CLI to be
+installed and logged in on the host.
 
 ## Start it
 
@@ -106,17 +116,16 @@ responder every ten minutes forever.
 
 ## Why two processes
 
-The dagu container carries no tooling on purpose, and a Linux container cannot
-read the macOS keychain — so a containerised `claude` would need an
-`ANTHROPIC_API_KEY` and bill per token instead of using your subscription.
+The dagu container carries no tooling on purpose. The selected coding-agent CLI
+runs on the macOS host so it can use the host login and local repositories.
 
 ```
 ┌─ Docker ──────────────────┐          ┌─ macOS host (login session) ─┐
 │ dagu start-all            │          │ dagu worker                  │
 │  • scheduler (cron)       │◀─ gRPC ──│  --worker.labels host=true   │
 │  • web UI      :8525      │  :50055  │                              │
-│  • coordinator :50055     │          │  claude (keychain auth), gh, │
-│                           │          │  git, jq, make, docker, repos│
+│  • coordinator :50055     │          │  codex/claude, gh, git, jq, │
+│                           │          │  make, docker, repositories  │
 └───────────────────────────┘          └──────────────────────────────┘
 ```
 
@@ -134,6 +143,7 @@ both is the failure mode described in *Known constraints* below.
 ```
 compose.yaml                          dagu container
 Makefile                              every command you need
+agent.yaml                            global coding-agent selection
 
 dags/sweatcharge-clarify-poller.yaml    agent:todo               -> clarifier
 dags/sweatcharge-implement-poller.yaml  agent:ready-to-implement -> implementer
@@ -146,7 +156,7 @@ dags/agent-close-issue.yaml           closes the issue, reclaims the worktree
 dags/worker-health-check.yaml         host worker health check
 
 prompts/clarify-issue.md              the three headless prompts, one per
-prompts/implement-issue.md            Claude agent, each with its own
+prompts/implement-issue.md            coding agent, each with its own
 prompts/respond-review.md             result.json exit contract
 
 bin/relabel.sh                        guarded claim: swap FROM -> TO
@@ -156,8 +166,8 @@ bin/triage-issue.sh                   issue -> pull request -> decision
 bin/pr-state.sh                       GraphQL dump of one pull request
 bin/pr-triage.jq                      the respond/close/idle decision
 bin/review-digest.jq                  outstanding feedback, as markdown
-bin/run-claude.sh                     headless claude + live stream rendering
-bin/render-claude-stream.jq           the stream renderer
+run-agent.sh                          configured agent + live stream rendering
+render-agent-stream.jq                shared Claude/Codex stream renderer
 
 data/  logs/                          runtime state (gitignored)
 ```
@@ -203,9 +213,8 @@ An issue with no `agent:*` label is invisible to every poller. Only the
 agent-feature issue template applies `agent:todo`, so a blank issue or a plain
 `gh issue create` lands unlabelled — the clarify poller logs a hint listing them.
 
-`claude_auth` failing with `Not logged in` means the worker is outside your login
-session and cannot reach the keychain. Run it from a normal terminal — a
-LaunchDaemon will never work; a LaunchAgent can.
+`agent_auth` failing means the selected CLI is not logged in from the worker's
+login session. Authenticate that CLI there, then run `make health` again.
 
 ## Unsticking a killed run
 
@@ -231,33 +240,34 @@ git -C /Users/lexuancuong/CUONG/SWC worktree remove ../SWC-worktrees/<slug>
 ```
 
 Working files from every run are kept under `/tmp/dagu-agent/<issue>/<stage>/`
-(`brief.md`, `prompt.md`, `claude-stream.jsonl`, `result.json`, `report.md`).
+(`brief.md`, `prompt.md`, the raw agent JSONL stream, `result.json`, `report.md`).
 
 ## Watching an agent work
 
-Every Claude step streams a readable view into its stdout log, so the run view at
+Every coding-agent step streams a readable view into its stdout log, so the run view at
 <http://localhost:8525> fills in live rather than sitting empty for the whole run:
 
 ```
-session 63bd10ab-...  model=claude-opus-...
+session 63bd10ab-...  agent=codex
 -> Bash {"command":"git worktree add ...","description":"..."}
 -> Edit {"file_path":"...","old_string":"..."}
    tool error: Exit code 1
 == success  turns=47  cost_usd=3.81  2913s
 ```
 
-This needs `--output-format stream-json` (plain `json` emits one blob only at the
-very end) and the output must reach stdout rather than a redirect. The raw event
-stream is teed to `claude-stream.jsonl` for debugging; stderr stays a separate
-pane, because a non-JSON warning mixed into stdout would abort the `jq` renderer.
+The dispatcher selects the provider-specific JSONL mode (`--json` for Codex or
+`--output-format stream-json` for Claude). The raw event stream is teed to
+`agent-stream.jsonl` for debugging; stderr stays a separate pane, because a
+non-JSON warning mixed into stdout would abort the `jq` renderer.
 
-All of that lives in `bin/run-claude.sh`, so a fix reaches all three agents.
+All of that lives in `run-agent.sh`, so the selection and streaming behavior
+reach all three agents.
 
 ## Adding another repository
 
 The four `agent-*` DAGs take `REPO`, `WORKSPACE`, `SKILL` and `ISSUE_NUMBER`, so
 a second repo is three new poller files with different `consts`, plus
-`make labels REPO=owner/name`. Point each `SKILL` at whichever Claude Code skills
+`make labels REPO=owner/name`. Point each `SKILL` at whichever coding-agent skills
 clarify, implement and review that codebase.
 
 ## Known constraints

@@ -16,7 +16,7 @@ params:
   - name: SKILL
     type: string
     required: true
-    description: Claude Code skill that addresses review feedback
+    description: Coding-agent skill that addresses review feedback
   - name: ISSUE_NUMBER
     type: string
     required: true
@@ -27,6 +27,7 @@ params:
 consts:
   - prompts_dir: /Users/lexuancuong/CUONG/DAGU/prompts
   - bin_dir: /Users/lexuancuong/CUONG/DAGU/bin
+  - agent_runner: /Users/lexuancuong/CUONG/DAGU/run-agent.sh
   - budget_usd: "8"
 
 env:
@@ -75,7 +76,7 @@ steps:
       interval_sec: 0
     continue_on:
       failure: true
-    run: ${consts.bin_dir}/run-claude.sh "$RUN_DIR/prompt.md" ${consts.budget_usd} "$RUN_DIR/claude-stream.jsonl"
+    run: ${consts.agent_runner} "$RUN_DIR/prompt.md" ${consts.budget_usd} "$RUN_DIR/agent-stream.jsonl"
 
   - id: report
     depends: respond
@@ -129,7 +130,7 @@ steps:
       if [ "$result_status" = "failed" ]; then
         state="agent:failed"
         reason=$(field .error)
-        [ -n "$reason" ] || reason="The agent wrote no result.json. It was most likely killed, timed out after 1h, or exhausted its budget. Check claude-stream.jsonl."
+        [ -n "$reason" ] || reason="The agent wrote no result.json. It was most likely killed or timed out after 1h. Check agent-stream.jsonl."
         cat > "$body" <<EOF
       Review-response run \`${context.run.id}\` did not complete on PR #${params.PR_NUMBER}.
 

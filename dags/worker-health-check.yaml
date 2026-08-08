@@ -10,7 +10,9 @@ steps:
   - id: tools
     run: |
       set -eu
-      for bin in claude gh git jq make docker; do
+      agent=$(awk '/^[[:space:]]*agent:[[:space:]]*/ {print $2; exit}' /Users/lexuancuong/CUONG/DAGU/agent.yaml)
+      case "$agent" in codex|claude) ;; *) echo "Unsupported agent: $agent" >&2; exit 2 ;; esac
+      for bin in "$agent" gh git jq make docker; do
         printf '%-8s %s\n' "$bin" "$(command -v "$bin" || echo MISSING)"
         command -v "$bin" >/dev/null
       done
@@ -19,11 +21,13 @@ steps:
     depends: tools
     run: gh auth status
 
-  - id: claude_auth
+  - id: agent_auth
     depends: tools
-    # The usual failure is "Not logged in": claude reads the subscription
-    # credential from the macOS keychain, so the worker must run inside your
-    # login session -- a LaunchDaemon cannot do this.
     timeout_sec: 120
     run: |
-      claude -p "Reply with exactly OK" --max-turns 1
+      set -eu
+      agent=$(awk '/^[[:space:]]*agent:[[:space:]]*/ {print $2; exit}' /Users/lexuancuong/CUONG/DAGU/agent.yaml)
+      case "$agent" in
+        codex) printf 'Reply with exactly OK' | codex exec --sandbox read-only --skip-git-repo-check - ;;
+        claude) claude -p "Reply with exactly OK" --max-turns 1 ;;
+      esac

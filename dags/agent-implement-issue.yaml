@@ -2,8 +2,8 @@ type: graph
 description: Implement one clarified GitHub issue and open a pull request that closes it
 max_output_size: 10485760
 
-# Deliberately NO worker_selector, even though every step needs claude (macOS
-# keychain auth), gh, git, jq and the checkout on disk.
+# Deliberately NO worker_selector, even though every step needs the configured
+# coding-agent CLI, gh, git, jq and the checkout on disk.
 #
 # A child DAG inherits the worker its caller is running on, and the pollers are
 # already pinned to host=true -- so these steps land on the Mac either way. If
@@ -28,7 +28,7 @@ params:
   - name: SKILL
     type: string
     required: true
-    description: Claude Code skill that performs the implementation
+    description: Coding-agent skill that performs the implementation
   - name: ISSUE_NUMBER
     type: string
     required: true
@@ -36,6 +36,7 @@ params:
 consts:
   - prompts_dir: /Users/lexuancuong/CUONG/DAGU/prompts
   - bin_dir: /Users/lexuancuong/CUONG/DAGU/bin
+  - agent_runner: /Users/lexuancuong/CUONG/DAGU/run-agent.sh
   - budget_usd: "15"
 
 env:
@@ -94,7 +95,7 @@ steps:
       interval_sec: 0          # required by the schema even when retries are off
     continue_on:
       failure: true            # report the outcome on the issue either way
-    run: ${consts.bin_dir}/run-claude.sh "$RUN_DIR/prompt.md" ${consts.budget_usd} "$RUN_DIR/claude-stream.jsonl"
+    run: ${consts.agent_runner} "$RUN_DIR/prompt.md" ${consts.budget_usd} "$RUN_DIR/agent-stream.jsonl"
 
   - id: report
     depends: implement
@@ -161,7 +162,7 @@ steps:
       if [ "$result_status" = "failed" ]; then
         state="agent:failed"
         reason=$(field .error)
-        [ -n "$reason" ] || reason="The agent wrote no result.json. It was most likely killed, timed out after 2h, or exhausted its budget. Check claude-stream.jsonl."
+        [ -n "$reason" ] || reason="The agent wrote no result.json. It was most likely killed or timed out after 2h. Check agent-stream.jsonl."
         cat > "$body" <<EOF
       Implementation run \`${context.run.id}\` did not complete.
 

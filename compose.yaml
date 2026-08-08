@@ -2,7 +2,8 @@
 #
 # This container is the "brain" only: it holds the schedule, the web UI, and run
 # history. It deliberately carries no tooling. Every step is dispatched over gRPC
-# to the native host worker (`make worker`), which has claude, gh, git, jq, make,
+# to the native host worker (`make worker`), which has the configured coding
+# agent plus gh, git, jq, make,
 # docker and your repositories.
 #
 # See README.md for why, and docs.dagu.sh/configurations/deployment/docker-compose
