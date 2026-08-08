@@ -62,11 +62,22 @@ steps:
       # The issue body and every comment are untrusted text. They only ever
       # reach the agent as a file, never interpolated into a shell command or
       # into the prompt string.
+      #
+      # The `report` step below posts its own comments back onto this issue --
+      # the requirements brief, the questions, the operator instruction to
+      # relabel. Those are marked with an `agent:brief` / `agent:questions`
+      # HTML comment. Without filtering them out here, a re-run folds the
+      # pipeline's own prior output (including operator-facing instructions
+      # like "relabel this issue agent:todo") back into brief.md, where the
+      # clarify agent -- correctly, since it cannot tell pipeline scaffolding
+      # from an injected instruction -- refuses to proceed.
       jq -r '
         "# Issue #\(.number): \(.title)\n\n\(.body // "(no description)")\n"
         + (if (.comments | length) == 0 then ""
            else "\n---\n\n## Thread\n\n"
-                + ([.comments[] | "### \(.author.login) at \(.createdAt)\n\n\(.body)"]
+                + ([.comments[]
+                    | select(.body | test("<!-- agent:(brief|questions) -->") | not)
+                    | "### \(.author.login) at \(.createdAt)\n\n\(.body)"]
                    | join("\n\n"))
            end)
       ' "$RUN_DIR/issue.json" > "$RUN_DIR/brief.md"
