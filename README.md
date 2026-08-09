@@ -1,13 +1,13 @@
-# DAGU — four agents, one GitHub issue, one merged pull request
+# DAGU — three task DAGs, one GitHub issue, one merged pull request
 
-File an issue and label it `agent:todo`. Four agents move it the rest of the
-way: one asks what you left out, one builds it, one answers your review, one
-tidies up after the merge.
+File an issue and label it `agent:todo`. Three task DAGs move it the rest of the
+way: clarify requirements, implement the result, then resolve review feedback
+or tidy up after the merge.
 
-Each agent is a separate DAG with its own poller, its own prompt, and its own
-coding-agent skill. None of them knows the others exist. The **issue label is the
-entire interface between them** — an agent claims work by taking a label, and
-hands it on by setting a different one.
+Three scheduled DAGs own the three lifecycle phases. Each DAG polls, claims and
+processes its own work directly; there are no dispatcher or child-agent DAGs.
+The **issue label is the interface between phases** — a phase claims work by
+taking a label and hands it on by setting a different one.
 
 The coding-agent CLI is selected once in `agent.yaml`:
 
@@ -129,31 +129,24 @@ runs on the macOS host so it can use the host login and local repositories.
 └───────────────────────────┘          └──────────────────────────────┘
 ```
 
-Only the **pollers** set `worker_selector: {host: "true"}`, at DAG level, so
+All three task DAGs set `worker_selector: {host: "true"}`, at DAG level, so
 every step runs on the worker. Workers need no DAGs directory and no shared
 volume — the coordinator ships task definitions over gRPC and the worker streams
 logs back.
-
-The four `agent-*` DAGs set **no** selector on purpose: a child DAG inherits the
-worker its caller is on, so they land on the Mac anyway. Declaring the selector on
-both is the failure mode described in *Known constraints* below.
 
 ## Files
 
 ```
 compose.yaml                          dagu container
+service.yaml                          named queue concurrency limits
 Makefile                              every command you need
 agent.yaml                            global coding-agent selection
+project.env                          shared repository, workspace and skill defaults
 
-dags/sweatcharge-clarify-poller.yaml    agent:todo               -> clarifier
-dags/sweatcharge-implement-poller.yaml  agent:ready-to-implement -> implementer
-dags/sweatcharge-delivery-poller.yaml   agent:reviewing          -> responder | closer
-
-dags/agent-clarify-issue.yaml         asks, or writes the refined brief
-dags/agent-implement-issue.yaml       builds it, opens the pull request
-dags/agent-respond-review.yaml        answers review comments, pushes fixes
-dags/agent-close-issue.yaml           closes the issue, reclaims the worktree
-dags/worker-health-check.yaml         host worker health check
+dags/clarify-task.yaml                poll -> claim -> clarify -> report
+dags/implement-clarified-task.yaml    poll -> claim -> implement -> report
+dags/resolve-code-review.yaml         poll -> triage -> respond | finish
+dags/check-health.yaml                host worker health check
 
 prompts/clarify-issue.md              the three headless prompts, one per
 prompts/implement-issue.md            coding agent, each with its own
@@ -174,11 +167,9 @@ data/  logs/                          runtime state (gitignored)
 
 DAG discovery is **not recursive** — `dags/` must stay flat.
 
-Three pollers, four agents: the responder and the closer share one poller. Both
-would have to query `agent:reviewing` — it is the only label meaning "a pull
-request exists" — and two schedules racing on one label is exactly the collision
-this design exists to prevent. So the queue is read once, the pull request is
-inspected once, and the decision is dispatched to whichever agent owns it.
+`resolve-code-review` owns both response and cleanup because both start from
+`agent:reviewing`. It inspects each pull request once and follows the appropriate
+conditional branch. Cleanup remains deterministic and does not invoke a model.
 
 The closer is the one agent with no model behind it. Closing an issue and
 removing a worktree are exact, checkable operations; a language model could only
@@ -186,21 +177,22 @@ make them less reliable and more expensive.
 
 ## Manual runs
 
-Each stage can be run on demand, bypassing its poller and its label claim:
+Each stage can be run on demand. Queue selection is bypassed, but clarification
+and implementation still perform their normal guarded label claim:
 
 ```bash
 make clarify   ISSUE=42
 make implement ISSUE=42
-make respond   ISSUE=42 PR=7
-make close     ISSUE=42 PR=7
+make respond   ISSUE=42
+make close     ISSUE=42
 ```
 
 `dagu start` runs a DAG **locally**; only the queue dispatches to the worker.
 That is why `make health` uses `dagu enqueue` while these use `dagu start` — the
 latter runs on this Mac, which already has the toolchain.
 
-Each still reports its outcome onto the issue, overwriting whatever label the
-issue was carrying.
+The review DAG discovers the pull request from the issue's `agent:pr` marker and
+decides whether to respond or finish it.
 
 ## When nothing is happening
 
@@ -263,12 +255,11 @@ non-JSON warning mixed into stdout would abort the `jq` renderer.
 All of that lives in `run-agent.sh`, so the selection and streaming behavior
 reach all three agents.
 
-## Adding another repository
+## Using another repository
 
-The four `agent-*` DAGs take `REPO`, `WORKSPACE`, `SKILL` and `ISSUE_NUMBER`, so
-a second repo is three new poller files with different `consts`, plus
-`make labels REPO=owner/name`. Point each `SKILL` at whichever coding-agent skills
-clarify, implement and review that codebase.
+Change the five values in `project.env`: repository, local workspace, and the
+three coding-agent skills. All three DAGs and the Makefile load that single
+project configuration. Then run `make labels` for the target repo.
 
 ## Known constraints
 
@@ -277,25 +268,18 @@ clarify, implement and review that codebase.
   none of them merges anything, and the closer only acts on a pull request
   GitHub reports as already merged. `--max-budget-usd` caps spend, not blast
   radius: 4 for clarify, 15 for implement, 8 for respond.
-- **Two implementations at a time.** The implement poller claims up to
-  `max_parallel` (currently 2) issues per tick and fans them out with
-  `parallel:`; `overlap_policy: skip` drops the next tick while any child is
-  still running, so the ceiling holds without a cross-issue mutex. Each child
-  works in its own git worktree, and the target repo's `make test-ci` stack is
+- **Two implementations at a time.** Each `implement-clarified-task` run claims
+  one issue and exposes its full processing sequence as top-level DAG steps.
+  Scheduled runs use the `implementation` queue, whose service-level
+  `max_concurrency` is 2; `overlap_policy: all` lets another tick claim a
+  different ready issue while the first run is active. Each run works in its
+  own git worktree, and the target repo's `make test-ci` stack is
   namespaced per checkout (`swc-test-<hash>`) and publishes no host ports, which
-  is what makes concurrent suites safe. Raise `max_parallel` only if the Mac has
-  the RAM for that many Docker test stacks plus that many agent processes.
-  Because capacity is released per tick rather than per slot, a fast run waits
-  for its slower sibling before the next issue starts.
+  is what makes concurrent suites safe. Raise the queue limit only if the Mac
+  has the RAM for that many Docker test stacks and coding-agent processes.
 - **Clarification and review are not serialised** with implementation, and do not
   need to be. A long build no longer blocks a question being asked.
 - **The Mac must be awake.** A polling scheduler does nothing while asleep.
-- **A worker-pinned DAG can only run a child DAG inline.** If both the caller and
-  the child declare `worker_selector`, the `dag.run` step fails immediately with
-  `no sub-workflow runner accepted request` — dagu 2.12 will not re-dispatch a
-  child through the coordinator from inside a worker. Pin the pollers only. The
-  corollary is that `dagu enqueue agent-implement-issue` runs in the toolless
-  container; use `make implement` instead.
 - **The clarifier can be wrong.** It decides whether a human is needed, and a
   premature `agent:ready-to-implement` produces a confident pull request built on
   a guess. Its brief is posted on the issue before the implementer starts, so

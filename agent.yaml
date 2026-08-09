@@ -1,2 +1,2 @@
 # Coding agent used by every AI-backed DAG. Supported values: codex, claude.
-agent: claude
+agent: codex

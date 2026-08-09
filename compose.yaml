@@ -23,6 +23,7 @@ services:
     command:
       - dagu
       - start-all
+      - --config=/var/lib/dagu/service.yaml
       # Bind the coordinator to all interfaces so it is reachable through the
       # published port. Without --coordinator.advertise the coordinator registers
       # its container hostname, which the host worker cannot resolve, and the
@@ -40,6 +41,7 @@ services:
 
     volumes:
       - ./dags:/var/lib/dagu/dags
+      - ./service.yaml:/var/lib/dagu/service.yaml:ro
       - ./data:/var/lib/dagu/data
       - ./logs:/var/lib/dagu/logs
 

@@ -1,0 +1,7 @@
+# Service-level concurrency. Implementation runs are flat, one issue per run;
+# this queue permits two such runs to execute at the same time.
+queues:
+  enabled: true
+  config:
+    - name: implementation
+      max_concurrency: 2

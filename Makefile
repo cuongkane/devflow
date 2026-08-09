@@ -7,12 +7,9 @@ export DAGU_HOME := $(CURDIR)
 
 COORDINATOR := 127.0.0.1:50055
 
-REPO      ?= cuongkane/sweatcharge
-WORKSPACE ?= /Users/lexuancuong/CUONG/SWC
+include project.env
 
-CLARIFY_SKILL   ?= clarify-sweatcharge-issue
-IMPLEMENT_SKILL ?= implement-sweatcharge-feature
-RESPOND_SKILL   ?= respond-sweatcharge-review
+REPO      ?= $(PROJECT_REPO)
 
 # Every label in the state machine, in lifecycle order. `state` walks this list.
 STATES := agent:todo agent:clarifying agent:revising agent:ready-to-implement \
@@ -56,7 +53,7 @@ validate: ## Validate every DAG definition
 		&& echo ok || { echo FAILED; dagu validate "$$f"; exit 1; }; done
 
 health: ## Prove the host worker is reachable, tooled and logged in
-	@docker compose exec -T dagu dagu enqueue worker-health-check
+	@docker compose exec -T dagu dagu enqueue check-health
 	@echo "Enqueued. Watch the 'make worker' pane, or http://localhost:8525"
 
 state: ## Show every open issue, grouped by its agent:* state
@@ -75,30 +72,23 @@ state: ## Show every open issue, grouped by its agent:* state
 # only the queue dispatches to the worker. That is why `health` uses
 # `dagu enqueue` and everything below uses `dagu start`.
 #
-# These bypass the poller, so they also bypass the label claim. The agent still
-# reports its outcome onto the issue, which will overwrite whatever label the
-# issue currently carries.
+# Supplying ISSUE_NUMBER bypasses queue selection, but the DAG still performs
+# the normal atomic label claim before doing work.
 
 clarify: ## Clarify one issue now: make clarify ISSUE=42
 	@test -n "$(ISSUE)" || { echo "usage: make clarify ISSUE=<number>"; exit 1; }
-	dagu start dags/agent-clarify-issue.yaml -- \
-		REPO=$(REPO) WORKSPACE=$(WORKSPACE) SKILL=$(CLARIFY_SKILL) ISSUE_NUMBER=$(ISSUE)
+	dagu start dags/clarify-task.yaml -- ISSUE_NUMBER=$(ISSUE)
 
 implement: ## Implement one issue now: make implement ISSUE=42
 	@test -n "$(ISSUE)" || { echo "usage: make implement ISSUE=<number>"; exit 1; }
-	dagu start dags/agent-implement-issue.yaml -- \
-		REPO=$(REPO) WORKSPACE=$(WORKSPACE) SKILL=$(IMPLEMENT_SKILL) ISSUE_NUMBER=$(ISSUE)
+	dagu start dags/implement-clarified-task.yaml -- ISSUE_NUMBER=$(ISSUE)
 
-respond: ## Address review feedback now: make respond ISSUE=42 PR=7
-	@test -n "$(ISSUE)" -a -n "$(PR)" || { echo "usage: make respond ISSUE=<number> PR=<number>"; exit 1; }
-	dagu start dags/agent-respond-review.yaml -- \
-		REPO=$(REPO) WORKSPACE=$(WORKSPACE) SKILL=$(RESPOND_SKILL) \
-		ISSUE_NUMBER=$(ISSUE) PR_NUMBER=$(PR)
+respond: ## Resolve the current review state now: make respond ISSUE=42
+	@test -n "$(ISSUE)" || { echo "usage: make respond ISSUE=<number>"; exit 1; }
+	dagu start dags/resolve-code-review.yaml -- ISSUE_NUMBER=$(ISSUE)
 
-close: ## Finish a merged issue now: make close ISSUE=42 PR=7
-	@test -n "$(ISSUE)" -a -n "$(PR)" || { echo "usage: make close ISSUE=<number> PR=<number>"; exit 1; }
-	dagu start dags/agent-close-issue.yaml -- \
-		REPO=$(REPO) WORKSPACE=$(WORKSPACE) ISSUE_NUMBER=$(ISSUE) PR_NUMBER=$(PR)
+close: ## Resolve a merged review now (alias of respond): make close ISSUE=42
+	@$(MAKE) respond ISSUE=$(ISSUE)
 
 ## -- Repository setup --
 

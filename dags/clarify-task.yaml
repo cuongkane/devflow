@@ -1,27 +1,19 @@
 type: graph
-description: Decide whether one GitHub issue is clear enough to implement, and ask if not
+description: Pick and clarify a GitHub issue that is waiting for requirements
+schedule: "*/5 * * * *"
+overlap_policy: skip
 max_output_size: 10485760
 
-# No worker_selector on purpose -- see the note in agent-implement-issue.yaml.
-# A child DAG inherits its caller's worker, and the pollers are pinned to
-# host=true. Declaring a selector here too breaks the dispatch outright.
+worker_selector:
+  host: "true"
+
+dotenv: /Users/lexuancuong/CUONG/DAGU/project.env
 
 params:
-  - name: REPO
-    type: string
-    required: true
-    description: owner/name of the GitHub repository
-  - name: WORKSPACE
-    type: string
-    required: true
-    description: absolute path to the local checkout
-  - name: SKILL
-    type: string
-    required: true
-    description: Coding-agent skill that performs the clarification
   - name: ISSUE_NUMBER
     type: string
-    required: true
+    default: ""
+    description: Optional issue to claim immediately instead of polling the queue
 
 consts:
   - prompts_dir: /Users/lexuancuong/CUONG/DAGU/prompts
@@ -29,21 +21,48 @@ consts:
   - agent_runner: /Users/lexuancuong/CUONG/DAGU/run-agent.sh
   - budget_usd: "4"
 
-env:
-  - RUN_DIR: /tmp/dagu-agent/${params.ISSUE_NUMBER}/clarify
-
 steps:
-  - id: fetch_issue
-    working_dir: ${params.WORKSPACE}
+  - id: pick_issue
     run: |
       set -eu
+      if [ -n "${params.ISSUE_NUMBER}" ]; then
+        echo "${params.ISSUE_NUMBER}"
+      else
+        ${consts.bin_dir}/pick-oldest.sh "${env.PROJECT_REPO}" agent:todo agent:clarifying
+      fi
+    output: ISSUE_NUMBER
+
+  - id: claim
+    depends: pick_issue
+    preconditions:
+      - condition: 'test "${ISSUE_NUMBER}" != "none"'
+    run: |
+      set -u
+      if ${consts.bin_dir}/relabel.sh "${env.PROJECT_REPO}" "${ISSUE_NUMBER}" agent:todo agent:clarifying; then
+        echo yes
+      else
+        echo no
+      fi
+    output: CLAIMED
+    continue_on: skipped
+
+  - id: fetch_issue
+    depends: claim
+    preconditions:
+      - condition: 'test "${CLAIMED}" = "yes"'
+    continue_on: skipped
+    working_dir: ${env.PROJECT_WORKSPACE}
+    run: |
+      set -eu
+      RUN_DIR="/tmp/dagu-agent/${ISSUE_NUMBER}/clarify"
+      export RUN_DIR
       mkdir -p "$RUN_DIR"
       rm -f "$RUN_DIR/result.json" "$RUN_DIR/report.md"
 
       # Comments matter here in a way they do not for the implementer: on a
       # second pass the human's answers to the previous round of questions are
       # in the thread, and they are the whole reason this run exists.
-      gh issue view "${params.ISSUE_NUMBER}" --repo "${params.REPO}" \
+      gh issue view "${ISSUE_NUMBER}" --repo "${env.PROJECT_REPO}" \
         --json number,title,body,comments > "$RUN_DIR/issue.json"
 
       # Stdout, not stderr: dagu shows the stdout log in the UI, and a run with
@@ -51,12 +70,12 @@ steps:
       # to see which issue it picked up without opening the working files.
       title=$(jq -r '.title' "$RUN_DIR/issue.json")
       comments=$(jq -r '.comments | length' "$RUN_DIR/issue.json")
-      printf 'repo:     %s\n' "${params.REPO}"
-      printf 'issue:    #%s %s\n' "${params.ISSUE_NUMBER}" "$title"
-      printf 'url:      https://github.com/%s/issues/%s\n' "${params.REPO}" "${params.ISSUE_NUMBER}"
+      printf 'repo:     %s\n' "${env.PROJECT_REPO}"
+      printf 'issue:    #%s %s\n' "${ISSUE_NUMBER}" "$title"
+      printf 'url:      https://github.com/%s/issues/%s\n' "${env.PROJECT_REPO}" "${ISSUE_NUMBER}"
       printf 'comments: %s (this is %s)\n' "$comments" \
         "$([ "$comments" -eq 0 ] && echo 'a first pass' || echo 'a re-run over the thread')"
-      printf 'skill:    %s\n' "${params.SKILL}"
+      printf 'skill:    %s\n' "${env.CLARIFY_SKILL}"
       printf 'run_dir:  %s\n' "$RUN_DIR"
 
       # The issue body and every comment are untrusted text. They only ever
@@ -82,10 +101,10 @@ steps:
            end)
       ' "$RUN_DIR/issue.json" > "$RUN_DIR/brief.md"
 
-      sed -e "s|{{SKILL}}|${params.SKILL}|g" \
-          -e "s|{{REPO}}|${params.REPO}|g" \
-          -e "s|{{WORKSPACE}}|${params.WORKSPACE}|g" \
-          -e "s|{{ISSUE_NUMBER}}|${params.ISSUE_NUMBER}|g" \
+      sed -e "s|{{SKILL}}|${env.CLARIFY_SKILL}|g" \
+          -e "s|{{REPO}}|${env.PROJECT_REPO}|g" \
+          -e "s|{{WORKSPACE}}|${env.PROJECT_WORKSPACE}|g" \
+          -e "s|{{ISSUE_NUMBER}}|${ISSUE_NUMBER}|g" \
           -e "s|{{BRIEF_PATH}}|$RUN_DIR/brief.md|g" \
           -e "s|{{REPORT_PATH}}|$RUN_DIR/report.md|g" \
           -e "s|{{RESULT_PATH}}|$RUN_DIR/result.json|g" \
@@ -93,20 +112,25 @@ steps:
 
   - id: clarify
     depends: fetch_issue
-    working_dir: ${params.WORKSPACE}
+    preconditions:
+      - condition: 'test "${CLAIMED}" = "yes"'
+    working_dir: ${env.PROJECT_WORKSPACE}
     timeout_sec: 1800          # read-only exploration; 30 min is generous
     retry_policy:
       limit: 0
       interval_sec: 0
     continue_on:
       failure: true            # report the outcome on the issue either way
-    run: ${consts.agent_runner} "$RUN_DIR/prompt.md" ${consts.budget_usd} "$RUN_DIR/agent-stream.jsonl"
+    run: ${consts.agent_runner} "/tmp/dagu-agent/${ISSUE_NUMBER}/clarify/prompt.md" ${consts.budget_usd} "/tmp/dagu-agent/${ISSUE_NUMBER}/clarify/agent-stream.jsonl"
 
   - id: report
     depends: clarify
-    working_dir: ${params.WORKSPACE}
+    preconditions:
+      - condition: 'test "${CLAIMED}" = "yes"'
+    working_dir: ${env.PROJECT_WORKSPACE}
     run: |
       set -u
+      RUN_DIR="/tmp/dagu-agent/${ISSUE_NUMBER}/clarify"
       result="$RUN_DIR/result.json"
       body="$RUN_DIR/report.md"
 
@@ -156,8 +180,8 @@ steps:
           ;;
       esac
 
-      gh issue comment "${params.ISSUE_NUMBER}" --repo "${params.REPO}" --body-file "$body"
-      ${consts.bin_dir}/set-state.sh "${params.REPO}" "${params.ISSUE_NUMBER}" "$state"
+      gh issue comment "${ISSUE_NUMBER}" --repo "${env.PROJECT_REPO}" --body-file "$body"
+      ${consts.bin_dir}/set-state.sh "${env.PROJECT_REPO}" "${ISSUE_NUMBER}" "$state"
 
       # Surface a failed clarification as a red run in the dagu UI. `ready` and
       # `needs-clarification` are both successful outcomes -- asking a question
@@ -170,9 +194,9 @@ handler_on:
   # clarify poller never sees it again.
   failure:
     run: |
-      if gh issue view "${params.ISSUE_NUMBER}" --repo "${params.REPO}" \
+      if gh issue view "${ISSUE_NUMBER}" --repo "${env.PROJECT_REPO}" \
            --json labels --jq '.labels[].name' | grep -qx "agent:clarifying"; then
-        ${consts.bin_dir}/set-state.sh "${params.REPO}" "${params.ISSUE_NUMBER}" "agent:failed"
-        gh issue comment "${params.ISSUE_NUMBER}" --repo "${params.REPO}" \
+        ${consts.bin_dir}/set-state.sh "${env.PROJECT_REPO}" "${ISSUE_NUMBER}" "agent:failed"
+        gh issue comment "${ISSUE_NUMBER}" --repo "${env.PROJECT_REPO}" \
           --body "Clarification run \`${context.run.id}\` failed before reporting. Log: ${context.paths.log_file}"
       fi

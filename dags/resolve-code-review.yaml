@@ -1,0 +1,247 @@
+type: graph
+description: Resolve review feedback or finish merged pull requests
+schedule: "*/10 * * * *"
+overlap_policy: skip
+
+worker_selector:
+  host: "true"
+
+dotenv: /Users/lexuancuong/CUONG/DAGU/project.env
+
+params:
+  - name: ISSUE_NUMBER
+    type: string
+    default: ""
+    description: Optional issue to inspect immediately instead of scanning the review set
+
+# Review response and merged-PR cleanup live in this one DAG because both watch
+# agent:reviewing. The queue is read once and triage selects a conditional
+# branch; cleanup is deterministic and does not invoke the coding agent.
+#
+# The interesting problem this solves: the agent posts as the repository
+# owner's own gh login, so "was that comment written by a human?" cannot be
+# answered from the author. bin/pr-triage.jq answers it from an
+# `<!-- agent:responded -->` marker instead, and treats review threads as
+# outstanding only when their newest comment is newer than that marker -- which
+# is what stops a thread the agent replied to but did not resolve from
+# re-triggering it every ten minutes forever.
+
+consts:
+  - bin_dir: /Users/lexuancuong/CUONG/DAGU/bin
+  - prompts_dir: /Users/lexuancuong/CUONG/DAGU/prompts
+  - agent_runner: /Users/lexuancuong/CUONG/DAGU/run-agent.sh
+  - budget_usd: "8"
+
+env:
+  - STATE_DIR: /tmp/dagu-agent/delivery-poll
+
+steps:
+  - id: pick_issue
+    # agent:reviewing is a watch set, not a conventional FIFO queue: idle PRs
+    # remain in it. Scan in issue order so an old idle PR cannot starve a newer
+    # PR that has review feedback or has been merged.
+    run: |
+      set -eu
+      if [ -n "${params.ISSUE_NUMBER}" ]; then
+        echo "${params.ISSUE_NUMBER}"
+        exit 0
+      fi
+      queued=$(gh issue list --repo "${env.PROJECT_REPO}" --label agent:reviewing \
+        --state open --limit 200 --json number)
+      for issue in $(printf '%s' "$queued" | jq -r 'sort_by(.number) | .[].number'); do
+        action=$(${consts.bin_dir}/triage-issue.sh "${env.PROJECT_REPO}" "$issue" | jq -r '.action')
+        if [ "$action" != "idle" ]; then
+          echo "$issue"
+          exit 0
+        fi
+        echo "[pick delivery] skipped #$issue (idle)" >&2
+      done
+      echo none
+    output: ISSUE_NUMBER
+
+  # No precondition on purpose. dagu leaves an unresolved reference as literal
+  # text rather than an empty string, so a skipped step here would leak the
+  # string "${ACTION}" into every precondition below. triage-issue.sh handles
+  # "none" itself and returns action=none.
+  - id: triage
+    depends: pick_issue
+    run: |
+      set -eu
+      mkdir -p "$STATE_DIR"
+      ${consts.bin_dir}/triage-issue.sh "${env.PROJECT_REPO}" "${ISSUE_NUMBER}" > "$STATE_DIR/decision.json"
+      echo "[triage] #${ISSUE_NUMBER} $(jq -c '.' "$STATE_DIR/decision.json")" >&2
+      jq -r '.action' "$STATE_DIR/decision.json"
+    output: ACTION
+
+  - id: pick_pr
+    depends: triage
+    run: jq -r '.pr // "none"' "$STATE_DIR/decision.json"
+    output: PR_NUMBER
+
+  - id: claim_respond
+    depends: pick_pr
+    preconditions:
+      - condition: 'test "${ACTION}" = "respond"'
+    run: |
+      set -u
+      if ${consts.bin_dir}/relabel.sh "${env.PROJECT_REPO}" "${ISSUE_NUMBER}" agent:reviewing agent:responding; then
+        echo yes
+      else
+        echo no
+      fi
+    output: CLAIMED
+    continue_on: skipped
+
+  - id: respond_review
+    depends: claim_respond
+    preconditions:
+      - condition: 'test "${CLAIMED}" = "yes"'
+    working_dir: ${env.PROJECT_WORKSPACE}
+    timeout_sec: 3600
+    retry_policy:
+      limit: 0
+      interval_sec: 0
+    run: |
+      set -u
+      RUN_DIR="/tmp/dagu-agent/${ISSUE_NUMBER}/review"
+      export RUN_DIR
+
+      recover() {
+        code=$?
+        if gh issue view "${ISSUE_NUMBER}" --repo "${env.PROJECT_REPO}" \
+             --json labels --jq '.labels[].name' | grep -qx agent:responding; then
+          ${consts.bin_dir}/set-state.sh "${env.PROJECT_REPO}" "${ISSUE_NUMBER}" agent:failed
+          gh issue comment "${ISSUE_NUMBER}" --repo "${env.PROJECT_REPO}" \
+            --body "Review-response run \`${context.run.id}\` failed before reporting. Log: ${context.paths.log_file}" || true
+        fi
+        exit "$code"
+      }
+      trap recover EXIT
+
+      mkdir -p "$RUN_DIR"
+      rm -f "$RUN_DIR/result.json" "$RUN_DIR/report.md"
+      ${consts.bin_dir}/pr-state.sh "${env.PROJECT_REPO}" "${PR_NUMBER}" > "$RUN_DIR/pr.json"
+      jq -f "${consts.bin_dir}/pr-triage.jq" "$RUN_DIR/pr.json" > "$RUN_DIR/triage.json"
+      jq -r --argjson triage "$(cat "$RUN_DIR/triage.json")" \
+        -f "${consts.bin_dir}/review-digest.jq" "$RUN_DIR/pr.json" > "$RUN_DIR/feedback.md"
+      head_ref=$(jq -r '.head' "$RUN_DIR/triage.json")
+
+      sed -e "s|{{SKILL}}|${env.REVIEW_SKILL}|g" \
+          -e "s|{{REPO}}|${env.PROJECT_REPO}|g" \
+          -e "s|{{WORKSPACE}}|${env.PROJECT_WORKSPACE}|g" \
+          -e "s|{{ISSUE_NUMBER}}|${ISSUE_NUMBER}|g" \
+          -e "s|{{PR_NUMBER}}|${PR_NUMBER}|g" \
+          -e "s|{{HEAD_REF}}|$head_ref|g" \
+          -e "s|{{FEEDBACK_PATH}}|$RUN_DIR/feedback.md|g" \
+          -e "s|{{REPORT_PATH}}|$RUN_DIR/report.md|g" \
+          -e "s|{{RESULT_PATH}}|$RUN_DIR/result.json|g" \
+          "${consts.prompts_dir}/respond-review.md" > "$RUN_DIR/prompt.md"
+
+      ${consts.agent_runner} "$RUN_DIR/prompt.md" ${consts.budget_usd} "$RUN_DIR/agent-stream.jsonl" || true
+
+      result="$RUN_DIR/result.json"
+      body="$RUN_DIR/report.md"
+      result_status=$(jq -r '.status // "failed"' "$result" 2>/dev/null || echo failed)
+      field() { jq -r "$1 // \"\"" "$result" 2>/dev/null || echo ""; }
+      if [ ! -s "$body" ] && [ "$result_status" != failed ]; then
+        result_status=failed
+      fi
+
+      case "$result_status" in
+        responded|nothing-to-do)
+          state=agent:reviewing
+          printf '\n<!-- agent:responded -->\n' >> "$body"
+          gh pr comment "${PR_NUMBER}" --repo "${env.PROJECT_REPO}" --body-file "$body"
+          ;;
+        blocked)
+          state=agent:revising
+          cat >> "$body" <<'EOF'
+
+      ---
+
+      Answer above, then relabel this issue `agent:todo` to re-run clarification.
+
+      <!-- agent:questions -->
+      EOF
+          gh issue comment "${ISSUE_NUMBER}" --repo "${env.PROJECT_REPO}" --body-file "$body"
+          ;;
+        *)
+          result_status=failed
+          state=agent:failed
+          reason=$(field .error)
+          [ -n "$reason" ] || reason="The agent wrote no result.json or timed out after 1h."
+          cat > "$body" <<EOF
+      Review-response run \`${context.run.id}\` did not complete on PR #${PR_NUMBER}.
+
+      $reason
+
+      Working files: \`$RUN_DIR\`
+      EOF
+          gh issue comment "${ISSUE_NUMBER}" --repo "${env.PROJECT_REPO}" --body-file "$body"
+          ;;
+      esac
+
+      ${consts.bin_dir}/set-state.sh "${env.PROJECT_REPO}" "${ISSUE_NUMBER}" "$state"
+      trap - EXIT
+      test "$result_status" != failed
+    continue_on: skipped
+
+  - id: finish_merged
+    depends: pick_pr
+    preconditions:
+      - condition: 'test "${ACTION}" = "close"'
+    working_dir: ${env.PROJECT_WORKSPACE}
+    run: |
+      set -eu
+      RUN_DIR="/tmp/dagu-agent/${ISSUE_NUMBER}/close"
+      mkdir -p "$RUN_DIR"
+      ${consts.bin_dir}/pr-state.sh "${env.PROJECT_REPO}" "${PR_NUMBER}" > "$RUN_DIR/pr.json"
+      test "$(jq -r '.merged' "$RUN_DIR/pr.json")" = true
+
+      head_ref=$(jq -r '.headRefName' "$RUN_DIR/pr.json")
+      url=$(jq -r '.url' "$RUN_DIR/pr.json")
+      state=$(gh issue view "${ISSUE_NUMBER}" --repo "${env.PROJECT_REPO}" --json state --jq '.state')
+      if [ "$state" = OPEN ]; then
+        gh issue close "${ISSUE_NUMBER}" --repo "${env.PROJECT_REPO}" \
+          --reason completed --comment "Closed by merged pull request $url."
+      fi
+      ${consts.bin_dir}/set-state.sh "${env.PROJECT_REPO}" "${ISSUE_NUMBER}" agent:finished
+
+      # Cleanup is best-effort: delivery is already complete at this point.
+      set +e
+      path=$(git -C "${env.PROJECT_WORKSPACE}" worktree list --porcelain \
+        | awk -v ref="refs/heads/$head_ref" '
+            /^worktree / { p = substr($0, 10) }
+            $0 == "branch " ref { print p; exit }')
+      if [ -z "$path" ]; then
+        echo "[reclaim] no worktree holds $head_ref"
+      elif [ -n "$(git -C "$path" status --porcelain 2>/dev/null)" ]; then
+        echo "[reclaim] keeping dirty worktree $path" >&2
+      else
+        git -C "${env.PROJECT_WORKSPACE}" worktree remove "$path"
+      fi
+      git -C "${env.PROJECT_WORKSPACE}" worktree prune
+      git -C "${env.PROJECT_WORKSPACE}" branch -d "$head_ref" 2>/dev/null || true
+    continue_on: skipped
+
+  # `abandoned` is a pull request closed without merging; `orphan` is an issue
+  # labelled agent:reviewing that has no PR marker to follow. Neither is
+  # something an agent should resolve on its own, and leaving either on
+  # agent:reviewing would make this poller re-inspect it every ten minutes for
+  # as long as it exists.
+  - id: stop_dead_end
+    depends: pick_pr
+    preconditions:
+      - condition: 'test "${ACTION}" = "abandoned" || test "${ACTION}" = "orphan"'
+    run: |
+      set -eu
+      if [ "${ACTION}" = "abandoned" ]; then
+        note="Pull request #${PR_NUMBER} was closed without being merged, so this issue is not delivered.
+      Reopen the pull request, or relabel this issue \`agent:todo\` to start again from clarification."
+      else
+        note="This issue is labelled \`agent:reviewing\` but carries no \`<!-- agent:pr=N -->\` marker,
+      so there is no pull request to follow. Relabel it \`agent:todo\` to start again from clarification."
+      fi
+      gh issue comment "${ISSUE_NUMBER}" --repo "${env.PROJECT_REPO}" --body "$note"
+      ${consts.bin_dir}/set-state.sh "${env.PROJECT_REPO}" "${ISSUE_NUMBER}" agent:failed
+    continue_on: skipped

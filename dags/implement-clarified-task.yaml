@@ -1,37 +1,20 @@
 type: graph
-description: Implement one clarified GitHub issue and open a pull request that closes it
+description: Claim and implement clarified GitHub issues
+schedule: "*/10 * * * *"
+overlap_policy: all
+queue: implementation
 max_output_size: 10485760
 
-# Deliberately NO worker_selector, even though every step needs the configured
-# coding-agent CLI, gh, git, jq and the checkout on disk.
-#
-# A child DAG inherits the worker its caller is running on, and the pollers are
-# already pinned to host=true -- so these steps land on the Mac either way. If
-# this DAG declares its own selector as well, dagu tries to re-dispatch the
-# child through the coordinator from inside the worker and the step dies with
-# "no sub-workflow runner accepted request" (dagu 2.12). A worker-pinned parent
-# can only run a child inline.
-#
-# The cost is that this DAG must not be started with `dagu enqueue` on its own:
-# with no caller to inherit from it would run inside the toolless container.
-# Start it through a poller, or locally with `make implement ISSUE=<n>`.
+worker_selector:
+  host: "true"
+
+dotenv: /Users/lexuancuong/CUONG/DAGU/project.env
 
 params:
-  - name: REPO
-    type: string
-    required: true
-    description: owner/name of the GitHub repository
-  - name: WORKSPACE
-    type: string
-    required: true
-    description: absolute path to the local checkout
-  - name: SKILL
-    type: string
-    required: true
-    description: Coding-agent skill that performs the implementation
   - name: ISSUE_NUMBER
     type: string
-    required: true
+    default: ""
+    description: Optional issue to claim immediately instead of polling the queue
 
 consts:
   - prompts_dir: /Users/lexuancuong/CUONG/DAGU/prompts
@@ -39,30 +22,78 @@ consts:
   - agent_runner: /Users/lexuancuong/CUONG/DAGU/run-agent.sh
   - budget_usd: "15"
 
-env:
-  - RUN_DIR: /tmp/dagu-agent/${params.ISSUE_NUMBER}/implement
-
 steps:
+  - id: claim
+    run: |
+      set -eu
+      if [ -n "${params.ISSUE_NUMBER}" ]; then
+        issue="${params.ISSUE_NUMBER}"
+      else
+        issue=$(${consts.bin_dir}/pick-oldest.sh "${env.PROJECT_REPO}" \
+          agent:ready-to-implement agent:implementing) || exit 1
+      fi
+
+      if [ "$issue" = none ]; then
+        jq -nc '{
+          claimed: false,
+          issue_number: "",
+          message: "No issue is currently ready to implement. This poll completed without work."
+        }'
+      elif ${consts.bin_dir}/relabel.sh "${env.PROJECT_REPO}" "$issue" \
+             agent:ready-to-implement agent:implementing; then
+        jq -nc --arg issue "$issue" '{
+          claimed: true,
+          issue_number: $issue,
+          message: ("Claimed issue #" + $issue + " for implementation.")
+        }'
+      else
+        jq -nc --arg issue "$issue" '{
+          claimed: false,
+          issue_number: "",
+          message: ("Issue #" + $issue + " was selected but could not be claimed because its state changed.")
+        }'
+      fi
+    output:
+      claimed:
+        from: stdout
+        decode: json
+        select: .claimed
+      issue_number:
+        from: stdout
+        decode: json
+        select: .issue_number
+      message:
+        from: stdout
+        decode: json
+        select: .message
+
   - id: fetch_issue
-    working_dir: ${params.WORKSPACE}
+    depends: claim
+    preconditions:
+      - condition: 'test "${claim.output.claimed}" = "true"'
+    working_dir: ${env.PROJECT_WORKSPACE}
+    env:
+      - RUN_DIR: /tmp/dagu-agent/${claim.output.issue_number}/implement
+    continue_on:
+      failure: true
     run: |
       set -eu
       mkdir -p "$RUN_DIR"
       rm -f "$RUN_DIR/result.json" "$RUN_DIR/report.md"
 
-      gh issue view "${params.ISSUE_NUMBER}" --repo "${params.REPO}" \
+      gh issue view "${claim.output.issue_number}" --repo "${env.PROJECT_REPO}" \
         --json number,title,body,comments > "$RUN_DIR/issue.json"
 
       # Stdout, not stderr: dagu shows the stdout log in the UI, and a run with
-      # none reads as "<No log output>". Whoever opens this run should be able
-      # to see which issue it picked up without opening the working files.
+      # Whoever opens this run should be able to see which issue it picked up
+      # without opening the working files.
       title=$(jq -r '.title' "$RUN_DIR/issue.json")
       comments=$(jq -r '.comments | length' "$RUN_DIR/issue.json")
-      printf 'repo:     %s\n' "${params.REPO}"
-      printf 'issue:    #%s %s\n' "${params.ISSUE_NUMBER}" "$title"
-      printf 'url:      https://github.com/%s/issues/%s\n' "${params.REPO}" "${params.ISSUE_NUMBER}"
+      printf 'repo:     %s\n' "${env.PROJECT_REPO}"
+      printf 'issue:    #%s %s\n' "${claim.output.issue_number}" "$title"
+      printf 'url:      https://github.com/%s/issues/%s\n' "${env.PROJECT_REPO}" "${claim.output.issue_number}"
       printf 'comments: %s\n' "$comments"
-      printf 'skill:    %s\n' "${params.SKILL}"
+      printf 'skill:    %s\n' "${env.IMPLEMENT_SKILL}"
       printf 'run_dir:  %s\n' "$RUN_DIR"
 
       # The clarifier's refined brief supersedes the raw issue body: it has
@@ -89,10 +120,10 @@ steps:
           "$RUN_DIR/issue.json" > "$RUN_DIR/brief.md"
       fi
 
-      sed -e "s|{{SKILL}}|${params.SKILL}|g" \
-          -e "s|{{REPO}}|${params.REPO}|g" \
-          -e "s|{{WORKSPACE}}|${params.WORKSPACE}|g" \
-          -e "s|{{ISSUE_NUMBER}}|${params.ISSUE_NUMBER}|g" \
+      sed -e "s|{{SKILL}}|${env.IMPLEMENT_SKILL}|g" \
+          -e "s|{{REPO}}|${env.PROJECT_REPO}|g" \
+          -e "s|{{WORKSPACE}}|${env.PROJECT_WORKSPACE}|g" \
+          -e "s|{{ISSUE_NUMBER}}|${claim.output.issue_number}|g" \
           -e "s|{{BRIEF_PATH}}|$RUN_DIR/brief.md|g" \
           -e "s|{{REPORT_PATH}}|$RUN_DIR/report.md|g" \
           -e "s|{{RESULT_PATH}}|$RUN_DIR/result.json|g" \
@@ -100,7 +131,11 @@ steps:
 
   - id: announce
     depends: fetch_issue
-    working_dir: ${params.WORKSPACE}
+    preconditions:
+      - condition: 'test "${claim.output.claimed}" = "true"'
+    working_dir: ${env.PROJECT_WORKSPACE}
+    env:
+      - RUN_DIR: /tmp/dagu-agent/${claim.output.issue_number}/implement
     continue_on:
       failure: true          # a missing notice must not cost us the run
     run: |
@@ -108,7 +143,7 @@ steps:
       # The implementation takes 30-90 min with nothing visible on the issue
       # until `report` runs. Say up front that it has been picked up, so a human
       # reading their notifications does not start the same work by hand.
-      gh issue comment "${params.ISSUE_NUMBER}" --repo "${params.REPO}" --body "$(cat <<EOF
+      gh issue comment "${claim.output.issue_number}" --repo "${env.PROJECT_REPO}" --body "$(cat <<EOF
       🤖 Started implementing this issue.
 
       Run \`${context.run.id}\` is working on it now; a pull request or a report
@@ -118,7 +153,11 @@ steps:
 
   - id: implement
     depends: announce
-    working_dir: ${params.WORKSPACE}
+    preconditions:
+      - condition: 'test "${claim.output.claimed}" = "true"'
+    working_dir: ${env.PROJECT_WORKSPACE}
+    env:
+      - RUN_DIR: /tmp/dagu-agent/${claim.output.issue_number}/implement
     timeout_sec: 7200          # 2h ceiling; the skill's full flow is 30-90 min
     retry_policy:
       limit: 0                 # a partial run already created a branch and worktree
@@ -129,7 +168,13 @@ steps:
 
   - id: report
     depends: implement
-    working_dir: ${params.WORKSPACE}
+    preconditions:
+      - condition: 'test "${claim.output.claimed}" = "true"'
+    working_dir: ${env.PROJECT_WORKSPACE}
+    env:
+      - RUN_DIR: /tmp/dagu-agent/${claim.output.issue_number}/implement
+    continue_on:
+      failure: true
     run: |
       set -u
       result="$RUN_DIR/result.json"
@@ -202,21 +247,27 @@ steps:
       EOF
       fi
 
-      gh issue comment "${params.ISSUE_NUMBER}" --repo "${params.REPO}" --body-file "$body"
-      ${consts.bin_dir}/set-state.sh "${params.REPO}" "${params.ISSUE_NUMBER}" "$state"
+      gh issue comment "${claim.output.issue_number}" --repo "${env.PROJECT_REPO}" --body-file "$body"
+      ${consts.bin_dir}/set-state.sh "${env.PROJECT_REPO}" "${claim.output.issue_number}" "$state"
 
       # Surface a non-completed outcome as a red run in the dagu UI.
       test "$result_status" = "completed"
 
-handler_on:
-  # Covers the paths `report` cannot reach: timeout, worker loss, a step dying
-  # before it runs. Without this the issue would stay pinned to
-  # agent:implementing and the implement poller would never see it again.
-  failure:
+  - id: recover
+    depends: report
+    preconditions:
+      - condition: 'test "${claim.output.claimed}" = "true"'
+    working_dir: ${env.PROJECT_WORKSPACE}
     run: |
-      if gh issue view "${params.ISSUE_NUMBER}" --repo "${params.REPO}" \
-           --json labels --jq '.labels[].name' | grep -qx "agent:implementing"; then
-        ${consts.bin_dir}/set-state.sh "${params.REPO}" "${params.ISSUE_NUMBER}" "agent:failed"
-        gh issue comment "${params.ISSUE_NUMBER}" --repo "${params.REPO}" \
+      set -eu
+      labels=$(gh issue view "${claim.output.issue_number}" --repo "${env.PROJECT_REPO}" \
+        --json labels --jq '.labels[].name')
+      if printf '%s\n' "$labels" | grep -qx agent:implementing; then
+        ${consts.bin_dir}/set-state.sh "${env.PROJECT_REPO}" "${claim.output.issue_number}" agent:failed
+        gh issue comment "${claim.output.issue_number}" --repo "${env.PROJECT_REPO}" \
           --body "Implementation run \`${context.run.id}\` failed before reporting. Log: ${context.paths.log_file}"
+        exit 1
+      fi
+      if printf '%s\n' "$labels" | grep -Eq '^agent:(failed|revising)$'; then
+        exit 1
       fi
