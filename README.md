@@ -277,11 +277,16 @@ clarify, implement and review that codebase.
   none of them merges anything, and the closer only acts on a pull request
   GitHub reports as already merged. `--max-budget-usd` caps spend, not blast
   radius: 4 for clarify, 15 for implement, 8 for respond.
-- **One implementation at a time.** The implement poller claims one issue per
-  tick and `overlap_policy: skip` drops the next tick while a child is running,
-  so implementations serialise without needing a cross-issue mutex. This matters
-  because `make test-ci` in the target repo uses fixed Compose project and port
-  names and parallel runs would collide. Fix those names before raising it.
+- **Two implementations at a time.** The implement poller claims up to
+  `max_parallel` (currently 2) issues per tick and fans them out with
+  `parallel:`; `overlap_policy: skip` drops the next tick while any child is
+  still running, so the ceiling holds without a cross-issue mutex. Each child
+  works in its own git worktree, and the target repo's `make test-ci` stack is
+  namespaced per checkout (`swc-test-<hash>`) and publishes no host ports, which
+  is what makes concurrent suites safe. Raise `max_parallel` only if the Mac has
+  the RAM for that many Docker test stacks plus that many agent processes.
+  Because capacity is released per tick rather than per slot, a fast run waits
+  for its slower sibling before the next issue starts.
 - **Clarification and review are not serialised** with implementation, and do not
   need to be. A long build no longer blocks a question being asked.
 - **The Mac must be awake.** A polling scheduler does nothing while asleep.

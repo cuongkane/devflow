@@ -24,7 +24,7 @@ case "$agent" in
   claude)
     claude -p "$(cat "$prompt_file")" \
       --permission-mode bypassPermissions \
-      --model opus \
+      --model sonnet \
       --output-format stream-json \
       --verbose \
       --max-budget-usd "$budget_usd" \
