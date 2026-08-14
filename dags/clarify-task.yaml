@@ -26,9 +26,16 @@ steps:
     run: |
       set -eu
       if [ -n "${params.ISSUE_NUMBER}" ]; then
+        echo "[pick] manual issue #${params.ISSUE_NUMBER}" >&2
         echo "${params.ISSUE_NUMBER}"
       else
-        ${consts.bin_dir}/pick-oldest.sh "${env.PROJECT_REPO}" agent:todo agent:clarifying
+        issue=$(${consts.bin_dir}/pick-oldest.sh "${env.PROJECT_REPO}" agent:todo agent:clarifying)
+        if [ "$issue" = none ]; then
+          echo "[pick] no work: agent:todo is empty" >&2
+        else
+          echo "[pick] selected issue #$issue from agent:todo" >&2
+        fi
+        echo "$issue"
       fi
     output: ISSUE_NUMBER
 
@@ -39,8 +46,10 @@ steps:
     run: |
       set -u
       if ${consts.bin_dir}/relabel.sh "${env.PROJECT_REPO}" "${ISSUE_NUMBER}" agent:todo agent:clarifying; then
+        echo "[claim] #${ISSUE_NUMBER}: agent:todo -> agent:clarifying" >&2
         echo yes
       else
+        echo "[claim] #${ISSUE_NUMBER}: skipped because its state changed" >&2
         echo no
       fi
     output: CLAIMED
@@ -58,6 +67,7 @@ steps:
       export RUN_DIR
       mkdir -p "$RUN_DIR"
       rm -f "$RUN_DIR/result.json" "$RUN_DIR/report.md"
+      date +%s > "$RUN_DIR/started_at"
 
       # Comments matter here in a way they do not for the implementer: on a
       # second pass the human's answers to the previous round of questions are
@@ -71,7 +81,8 @@ steps:
       title=$(jq -r '.title' "$RUN_DIR/issue.json")
       comments=$(jq -r '.comments | length' "$RUN_DIR/issue.json")
       printf 'repo:     %s\n' "${env.PROJECT_REPO}"
-      printf 'issue:    #%s %s\n' "${ISSUE_NUMBER}" "$title"
+      printf 'issue:    #%s\n' "${ISSUE_NUMBER}"
+      printf 'title:    %s\n' "$title"
       printf 'url:      https://github.com/%s/issues/%s\n' "${env.PROJECT_REPO}" "${ISSUE_NUMBER}"
       printf 'comments: %s (this is %s)\n' "$comments" \
         "$([ "$comments" -eq 0 ] && echo 'a first pass' || echo 'a re-run over the thread')"
@@ -182,6 +193,19 @@ steps:
 
       gh issue comment "${ISSUE_NUMBER}" --repo "${env.PROJECT_REPO}" --body-file "$body"
       ${consts.bin_dir}/set-state.sh "${env.PROJECT_REPO}" "${ISSUE_NUMBER}" "$state"
+
+      started=$(cat "$RUN_DIR/started_at" 2>/dev/null || date +%s)
+      elapsed=$(( $(date +%s) - started ))
+      printf 'result:     %s\n' "$result_status"
+      printf 'issue:      #%s\n' "${ISSUE_NUMBER}"
+      printf 'transition: agent:clarifying -> %s\n' "$state"
+      printf 'elapsed:    %dm%02ds\n' "$((elapsed / 60))" "$((elapsed % 60))"
+      summary=$(jq -r '.summary // empty' "$result" 2>/dev/null || true)
+      [ -z "$summary" ] || printf 'summary:    %s\n' "$summary"
+      if [ "$result_status" = needs-clarification ]; then
+        questions=$(jq -r '.count // "unknown"' "$result" 2>/dev/null || echo unknown)
+        printf 'questions:  %s\n' "$questions"
+      fi
 
       # Surface a failed clarification as a red run in the dagu UI. `ready` and
       # `needs-clarification` are both successful outcomes -- asking a question

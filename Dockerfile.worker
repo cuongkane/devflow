@@ -5,6 +5,12 @@ FROM node:22-bookworm-slim
 ARG CODEX_VERSION=0.147.0
 ARG CLAUDE_CODE_VERSION=2.1.232
 
+# The implementation pipeline drives OpenSpec directly from shell -- it proposes,
+# validates and archives changes -- so the CLI has to exist in this image. On the
+# host it is a Volta-managed global, which the container cannot see: ~/.volta is
+# not mounted, and mounting it would drag in a macOS toolchain anyway.
+ARG OPENSPEC_VERSION=1.4.1
+
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         ca-certificates \
@@ -18,7 +24,8 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/* \
     && npm install --global \
         "@openai/codex@${CODEX_VERSION}" \
-        "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}"
+        "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" \
+        "@fission-ai/openspec@${OPENSPEC_VERSION}"
 
 COPY --from=dagu /usr/local/bin/dagu /usr/local/bin/dagu
 COPY worker-entrypoint.sh /usr/local/bin/worker-entrypoint

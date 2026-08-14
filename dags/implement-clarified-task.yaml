@@ -1,9 +1,30 @@
 type: graph
-description: Claim and implement clarified GitHub issues
+description: Claim and implement clarified GitHub issues, one visible phase at a time
 schedule: "*/10 * * * *"
 overlap_policy: all
 queue: implementation
 max_output_size: 10485760
+
+# The implementation used to be a single agent step: one prompt, one two-hour
+# timeout, one $15 budget, and no way to tell from the run view whether it was
+# exploring, writing code, or stuck. When it died it reported one undifferentiated
+# failure and the next attempt started from nothing.
+#
+# It is now the skill's own phases, one step each. Each phase has its own timeout,
+# its own budget, its own model tier, and its own line in the run view, so
+# progress is observable while it works and a failure names the phase it happened
+# in. Phases hand off through files -- `state.json`, the worktree, and the
+# OpenSpec change directory -- not through a live session, so a single phase can
+# be re-run on its own against a run directory that already exists.
+#
+# The steps stay one line each because their bodies live in bin/implement/ and
+# their prompts in prompts/implement/. Editing what a phase *does* means editing a
+# script or a prompt; this file only says what order they happen in.
+#
+# Deterministic phases -- the worktree, the verification commands, the archive,
+# the push and the pull request -- are shell, with no model involved. They are
+# exact, checkable operations; a language model could only make them less
+# reliable and more expensive.
 
 worker_selector:
   host: "true"
@@ -17,42 +38,13 @@ params:
     description: Optional issue to claim immediately instead of polling the queue
 
 consts:
-  - prompts_dir: /Users/lexuancuong/CUONG/DAGU/prompts
-  - bin_dir: /Users/lexuancuong/CUONG/DAGU/bin
-  - agent_runner: /Users/lexuancuong/CUONG/DAGU/run-agent.sh
-  - budget_usd: "15"
+  - impl: /Users/lexuancuong/CUONG/DAGU/bin/implement
+  - run_dir_root: /tmp/dagu-agent
 
 steps:
-  - id: claim
-    run: |
-      set -eu
-      if [ -n "${params.ISSUE_NUMBER}" ]; then
-        issue="${params.ISSUE_NUMBER}"
-      else
-        issue=$(${consts.bin_dir}/pick-oldest.sh "${env.PROJECT_REPO}" \
-          agent:ready-to-implement agent:implementing) || exit 1
-      fi
-
-      if [ "$issue" = none ]; then
-        jq -nc '{
-          claimed: false,
-          issue_number: "",
-          message: "No issue is currently ready to implement. This poll completed without work."
-        }'
-      elif ${consts.bin_dir}/relabel.sh "${env.PROJECT_REPO}" "$issue" \
-             agent:ready-to-implement agent:implementing; then
-        jq -nc --arg issue "$issue" '{
-          claimed: true,
-          issue_number: $issue,
-          message: ("Claimed issue #" + $issue + " for implementation.")
-        }'
-      else
-        jq -nc --arg issue "$issue" '{
-          claimed: false,
-          issue_number: "",
-          message: ("Issue #" + $issue + " was selected but could not be claimed because its state changed.")
-        }'
-      fi
+  # ---------------------------------------------------------------- claim ----
+  - id: claim_ready_issue
+    run: ${consts.impl}/claim-ready-issue.sh "${env.PROJECT_REPO}" "${params.ISSUE_NUMBER}"
     output:
       claimed:
         from: stdout
@@ -67,207 +59,235 @@ steps:
         decode: json
         select: .message
 
-  - id: fetch_issue
-    depends: claim
-    preconditions:
-      - condition: 'test "${claim.output.claimed}" = "true"'
+  # Everything below is gated on the claim. An idle poll -- the common case, ten
+  # times an hour -- costs one `gh` call and stops here.
+  - id: fetch_issue_brief
+    depends: claim_ready_issue
+    preconditions: &claimed
+      - condition: 'test "${claim_ready_issue.output.claimed}" = "true"'
     working_dir: ${env.PROJECT_WORKSPACE}
-    env:
-      - RUN_DIR: /tmp/dagu-agent/${claim.output.issue_number}/implement
-    continue_on:
-      failure: true
-    run: |
-      set -eu
-      mkdir -p "$RUN_DIR"
-      rm -f "$RUN_DIR/result.json" "$RUN_DIR/report.md"
-
-      gh issue view "${claim.output.issue_number}" --repo "${env.PROJECT_REPO}" \
-        --json number,title,body,comments > "$RUN_DIR/issue.json"
-
-      # Stdout, not stderr: dagu shows the stdout log in the UI, and a run with
-      # Whoever opens this run should be able to see which issue it picked up
-      # without opening the working files.
-      title=$(jq -r '.title' "$RUN_DIR/issue.json")
-      comments=$(jq -r '.comments | length' "$RUN_DIR/issue.json")
-      printf 'repo:     %s\n' "${env.PROJECT_REPO}"
-      printf 'issue:    #%s %s\n' "${claim.output.issue_number}" "$title"
-      printf 'url:      https://github.com/%s/issues/%s\n' "${env.PROJECT_REPO}" "${claim.output.issue_number}"
-      printf 'comments: %s\n' "$comments"
-      printf 'skill:    %s\n' "${env.IMPLEMENT_SKILL}"
-      printf 'run_dir:  %s\n' "$RUN_DIR"
-
-      # The clarifier's refined brief supersedes the raw issue body: it has
-      # already resolved the ambiguities and folded in the human's answers, and
-      # this agent is not allowed to ask anything. Fall back to the body only
-      # when the issue reached here without ever passing through clarification
-      # -- a hand-applied label, or `make implement`.
-      brief=$(jq -r '[.comments[] | select(.body | contains("<!-- agent:brief -->"))]
-                     | last | .body // empty' "$RUN_DIR/issue.json")
-
-      # The issue body and every comment are untrusted text. They only ever
-      # reach the agent as a file, never interpolated into a shell command or
-      # into the prompt string.
-      if [ -n "$brief" ]; then
-        echo "brief:    clarifier's refined <!-- agent:brief --> comment"
-        {
-          jq -r '"# Issue #\(.number): \(.title)"' "$RUN_DIR/issue.json"
-          printf '\n\n'
-          printf '%s\n' "$brief"
-        } > "$RUN_DIR/brief.md"
-      else
-        echo "brief:    WARNING: no <!-- agent:brief --> comment; using the raw issue body"
-        jq -r '"# Issue #\(.number): \(.title)\n\n\(.body // "(no description)")"' \
-          "$RUN_DIR/issue.json" > "$RUN_DIR/brief.md"
-      fi
-
-      sed -e "s|{{SKILL}}|${env.IMPLEMENT_SKILL}|g" \
-          -e "s|{{REPO}}|${env.PROJECT_REPO}|g" \
-          -e "s|{{WORKSPACE}}|${env.PROJECT_WORKSPACE}|g" \
-          -e "s|{{ISSUE_NUMBER}}|${claim.output.issue_number}|g" \
-          -e "s|{{BRIEF_PATH}}|$RUN_DIR/brief.md|g" \
-          -e "s|{{REPORT_PATH}}|$RUN_DIR/report.md|g" \
-          -e "s|{{RESULT_PATH}}|$RUN_DIR/result.json|g" \
-          "${consts.prompts_dir}/implement-issue.md" > "$RUN_DIR/prompt.md"
-
-  - id: announce
-    depends: fetch_issue
-    preconditions:
-      - condition: 'test "${claim.output.claimed}" = "true"'
-    working_dir: ${env.PROJECT_WORKSPACE}
-    env:
-      - RUN_DIR: /tmp/dagu-agent/${claim.output.issue_number}/implement
-    continue_on:
-      failure: true          # a missing notice must not cost us the run
-    run: |
-      set -u
-      # The implementation takes 30-90 min with nothing visible on the issue
-      # until `report` runs. Say up front that it has been picked up, so a human
-      # reading their notifications does not start the same work by hand.
-      gh issue comment "${claim.output.issue_number}" --repo "${env.PROJECT_REPO}" --body "$(cat <<EOF
-      🤖 Started implementing this issue.
-
-      Run \`${context.run.id}\` is working on it now; a pull request or a report
-      will be posted here when it finishes. No action needed in the meantime.
-      EOF
-      )"
-
-  - id: implement
-    depends: announce
-    preconditions:
-      - condition: 'test "${claim.output.claimed}" = "true"'
-    working_dir: ${env.PROJECT_WORKSPACE}
-    env:
-      - RUN_DIR: /tmp/dagu-agent/${claim.output.issue_number}/implement
-    timeout_sec: 7200          # 2h ceiling; the skill's full flow is 30-90 min
-    retry_policy:
-      limit: 0                 # a partial run already created a branch and worktree
-      interval_sec: 0          # required by the schema even when retries are off
-    continue_on:
+    continue_on: &carry_on
       failure: true            # report the outcome on the issue either way
-    run: ${consts.agent_runner} "$RUN_DIR/prompt.md" ${consts.budget_usd} "$RUN_DIR/agent-stream.jsonl"
+    run: >
+      ${consts.impl}/fetch-issue-brief.sh
+      "${env.PROJECT_REPO}"
+      "${claim_ready_issue.output.issue_number}"
+      "${consts.run_dir_root}/${claim_ready_issue.output.issue_number}/implement"
+      "${env.PROJECT_WORKSPACE}"
+      "${env.IMPLEMENT_SKILL}"
 
-  - id: report
-    depends: implement
-    preconditions:
-      - condition: 'test "${claim.output.claimed}" = "true"'
+  - id: announce_start_on_issue
+    depends: fetch_issue_brief
+    preconditions: *claimed
+    continue_on: *carry_on     # a missing notice must not cost us the run
+    run: >
+      ${consts.impl}/announce-start.sh
+      "${env.PROJECT_REPO}"
+      "${consts.run_dir_root}/${claim_ready_issue.output.issue_number}/implement"
+      "${context.run.id}"
+
+  - id: create_feature_worktree
+    depends: announce_start_on_issue
+    preconditions: *claimed
+    continue_on: *carry_on
+    run: >
+      ${consts.impl}/create-worktree.sh
+      "${env.PROJECT_WORKSPACE}"
+      "${consts.run_dir_root}/${claim_ready_issue.output.issue_number}/implement"
+
+  # ------------------------------------------------------- the agent work ----
+  # run-phase.sh builds the prompt, runs the agent at the given model tier, and
+  # enforces that phase's exit contract. Tier and budget are the two numbers worth
+  # tuning per phase; they are here rather than buried in a script for that reason.
+  - id: explore_codebase_context
+    depends: create_feature_worktree
+    preconditions: *claimed
     working_dir: ${env.PROJECT_WORKSPACE}
-    env:
-      - RUN_DIR: /tmp/dagu-agent/${claim.output.issue_number}/implement
+    timeout_sec: 900
+    retry_policy: &no_retry
+      limit: 0                 # a partial phase already changed the worktree
+      interval_sec: 0          # required by the schema even when retries are off
+    continue_on: *carry_on
+    run: >
+      ${consts.impl}/run-phase.sh explore
+      "${consts.run_dir_root}/${claim_ready_issue.output.issue_number}/implement"
+      "${env.PROJECT_REPO}" "${env.PROJECT_WORKSPACE}" "${env.IMPLEMENT_SKILL}"
+      fast 1
+
+  - id: write_openspec_proposal
+    depends: explore_codebase_context
+    preconditions: *claimed
+    working_dir: ${env.PROJECT_WORKSPACE}
+    timeout_sec: 900
+    retry_policy: *no_retry
+    continue_on: *carry_on
+    run: >
+      ${consts.impl}/run-phase.sh propose
+      "${consts.run_dir_root}/${claim_ready_issue.output.issue_number}/implement"
+      "${env.PROJECT_REPO}" "${env.PROJECT_WORKSPACE}" "${env.IMPLEMENT_SKILL}"
+      standard 2
+
+  # The long one: 30-60 minutes of the run, and the only phase that writes
+  # application code. It is not faster for having been split out -- it is
+  # attributable, which is what was missing.
+  - id: write_code_and_tests
+    depends: write_openspec_proposal
+    preconditions: *claimed
+    working_dir: ${env.PROJECT_WORKSPACE}
+    timeout_sec: 4500
+    retry_policy: *no_retry
+    continue_on: *carry_on
+    run: >
+      ${consts.impl}/run-phase.sh code
+      "${consts.run_dir_root}/${claim_ready_issue.output.issue_number}/implement"
+      "${env.PROJECT_REPO}" "${env.PROJECT_WORKSPACE}" "${env.IMPLEMENT_SKILL}"
+      deep 7
+
+  # -------------------------------------------------------- verification ----
+  # The target repository's own commands, run from shell. Previously this was a
+  # promise the agent had to keep two hours into a run; here it is a step that
+  # either passes or does not.
+  - id: run_verification_suite
+    depends: write_code_and_tests
+    preconditions: *claimed
+    timeout_sec: 2400
+    continue_on: *carry_on     # a failure here is work for the next step
+    run: >
+      ${consts.impl}/run-verification.sh
+      "${consts.run_dir_root}/${claim_ready_issue.output.issue_number}/implement"
+      verify
+
+  # A dagu precondition is a shell test, so the verdict is read from the file
+  # run-verification.sh writes rather than from the previous step's exit code.
+  - id: fix_failing_checks
+    depends: run_verification_suite
+    preconditions:
+      - condition: 'test "${claim_ready_issue.output.claimed}" = "true"'
+      - condition: 'test "$(cat "${consts.run_dir_root}/${claim_ready_issue.output.issue_number}/implement/verify.status")" = "fail"'
+    working_dir: ${env.PROJECT_WORKSPACE}
+    timeout_sec: 2400
+    retry_policy: *no_retry
     continue_on:
       failure: true
-    run: |
-      set -u
-      result="$RUN_DIR/result.json"
-      body="$RUN_DIR/report.md"
+      skipped: true            # skipped is the good case: the suite already passed
+    run: >
+      ${consts.impl}/run-phase.sh fix-verify
+      "${consts.run_dir_root}/${claim_ready_issue.output.issue_number}/implement"
+      "${env.PROJECT_REPO}" "${env.PROJECT_WORKSPACE}" "${env.IMPLEMENT_SKILL}"
+      deep 2
 
-      result_status=$(jq -r '.status // "failed"' "$result" 2>/dev/null || echo failed)
-      field() { jq -r "$1 // \"\"" "$result" 2>/dev/null || echo ""; }
-
-      if [ ! -s "$body" ] && [ "$result_status" != "failed" ]; then
-        echo "[report] status=$result_status but report.md is empty; treating as failed" >&2
-        result_status=failed
-      fi
-
-      case "$result_status" in
-        completed)
-          pr_url=$(field .pr_url)
-          pr_number=${pr_url##*/}
-
-          # A completed run with no usable PR URL is a failed run. The agent is
-          # told never to invent one, and the delivery poller cannot do anything
-          # with an issue whose PR it cannot find.
-          case "$pr_number" in
-            ''|*[!0-9]*)
-              echo "[report] status=completed but pr_url is unusable ('$pr_url')" >&2
-              result_status=failed
-              ;;
-            *)
-              state="agent:reviewing"
-              # This marker is how the delivery poller finds the PR. It is
-              # written here, from GitHub's own URL, rather than by the agent --
-              # the one fact in this pipeline that must not be paraphrased.
-              printf '\n<!-- agent:pr=%s -->\n' "$pr_number" >> "$body"
-              ;;
-          esac
-          ;;
-        blocked)
-          # Rare by design: this agent runs with no human in the loop, so a
-          # blocker means clarification missed something material. Send it back
-          # through the clarifier rather than guessing. The worktree is left in
-          # place so the next attempt can see how far this one got.
-          state="agent:revising"
-          cat >> "$body" <<'EOF'
-
-      ---
-
-      The implementer stopped on a blocker that clarification did not cover.
-      Answer above, then relabel this issue `agent:todo` to re-run clarification.
-
-      <!-- agent:questions -->
-      EOF
-          ;;
-        *)
-          # Anything else -- including a garbled status the agent invented --
-          # is a failure. Falling through with $state unset would trip `set -u`
-          # and report nothing at all.
-          result_status=failed
-          ;;
-      esac
-
-      if [ "$result_status" = "failed" ]; then
-        state="agent:failed"
-        reason=$(field .error)
-        [ -n "$reason" ] || reason="The agent wrote no result.json. It was most likely killed or timed out after 2h. Check agent-stream.jsonl."
-        cat > "$body" <<EOF
-      Implementation run \`${context.run.id}\` did not complete.
-
-      $reason
-
-      Working files: \`$RUN_DIR\`
-      EOF
-      fi
-
-      gh issue comment "${claim.output.issue_number}" --repo "${env.PROJECT_REPO}" --body-file "$body"
-      ${consts.bin_dir}/set-state.sh "${env.PROJECT_REPO}" "${claim.output.issue_number}" "$state"
-
-      # Surface a non-completed outcome as a red run in the dagu UI.
-      test "$result_status" = "completed"
-
-  - id: recover
-    depends: report
+  - id: rerun_verification_suite
+    depends: fix_failing_checks
     preconditions:
-      - condition: 'test "${claim.output.claimed}" = "true"'
+      - condition: 'test "${claim_ready_issue.output.claimed}" = "true"'
+      - condition: 'test "$(cat "${consts.run_dir_root}/${claim_ready_issue.output.issue_number}/implement/verify.status")" = "fail"'
+    timeout_sec: 2400
+    continue_on:
+      failure: true
+      skipped: true
+    run: >
+      ${consts.impl}/run-verification.sh
+      "${consts.run_dir_root}/${claim_ready_issue.output.issue_number}/implement"
+      verify-retry
+
+  # ------------------------------------------------------------- review ----
+  - id: review_and_fix_diff
+    depends: rerun_verification_suite
+    preconditions: *claimed
     working_dir: ${env.PROJECT_WORKSPACE}
-    run: |
-      set -eu
-      labels=$(gh issue view "${claim.output.issue_number}" --repo "${env.PROJECT_REPO}" \
-        --json labels --jq '.labels[].name')
-      if printf '%s\n' "$labels" | grep -qx agent:implementing; then
-        ${consts.bin_dir}/set-state.sh "${env.PROJECT_REPO}" "${claim.output.issue_number}" agent:failed
-        gh issue comment "${claim.output.issue_number}" --repo "${env.PROJECT_REPO}" \
-          --body "Implementation run \`${context.run.id}\` failed before reporting. Log: ${context.paths.log_file}"
-        exit 1
-      fi
-      if printf '%s\n' "$labels" | grep -Eq '^agent:(failed|revising)$'; then
-        exit 1
-      fi
+    timeout_sec: 1800
+    retry_policy: *no_retry
+    continue_on: *carry_on
+    run: >
+      ${consts.impl}/run-phase.sh review
+      "${consts.run_dir_root}/${claim_ready_issue.output.issue_number}/implement"
+      "${env.PROJECT_REPO}" "${env.PROJECT_WORKSPACE}" "${env.IMPLEMENT_SKILL}"
+      deep 3
+
+  # The skill requires the frontend production build to come from the *final*
+  # source state. Running the same checks again after the review's fixes makes
+  # that structural instead of something an agent has to remember.
+  - id: verify_after_review_fixes
+    depends: review_and_fix_diff
+    preconditions: *claimed
+    timeout_sec: 2400
+    continue_on: *carry_on
+    run: >
+      ${consts.impl}/run-verification.sh
+      "${consts.run_dir_root}/${claim_ready_issue.output.issue_number}/implement"
+      verify-final
+
+  # ------------------------------------------------ specifications, then PR ----
+  - id: sync_openspec_specs
+    depends: verify_after_review_fixes
+    preconditions: *claimed
+    working_dir: ${env.PROJECT_WORKSPACE}
+    timeout_sec: 900
+    retry_policy: *no_retry
+    continue_on: *carry_on
+    run: >
+      ${consts.impl}/run-phase.sh sync
+      "${consts.run_dir_root}/${claim_ready_issue.output.issue_number}/implement"
+      "${env.PROJECT_REPO}" "${env.PROJECT_WORKSPACE}" "${env.IMPLEMENT_SKILL}"
+      fast 1
+
+  # Shell, not agent: the repository's own archive skill prompts the operator to
+  # pick a change and confirm warnings, which cannot work unattended.
+  - id: archive_openspec_change
+    depends: sync_openspec_specs
+    preconditions: *claimed
+    timeout_sec: 600
+    continue_on: *carry_on
+    run: >
+      ${consts.impl}/archive-change.sh
+      "${consts.run_dir_root}/${claim_ready_issue.output.issue_number}/implement"
+
+  - id: write_pr_description
+    depends: archive_openspec_change
+    preconditions: *claimed
+    working_dir: ${env.PROJECT_WORKSPACE}
+    timeout_sec: 900
+    retry_policy: *no_retry
+    continue_on: *carry_on
+    run: >
+      ${consts.impl}/run-phase.sh pr-body
+      "${consts.run_dir_root}/${claim_ready_issue.output.issue_number}/implement"
+      "${env.PROJECT_REPO}" "${env.PROJECT_WORKSPACE}" "${env.IMPLEMENT_SKILL}"
+      fast 1
+
+  - id: push_and_open_pull_request
+    depends: write_pr_description
+    preconditions: *claimed
+    timeout_sec: 900
+    continue_on: *carry_on
+    run: >
+      ${consts.impl}/open-pull-request.sh
+      "${env.PROJECT_REPO}"
+      "${consts.run_dir_root}/${claim_ready_issue.output.issue_number}/implement"
+
+  # --------------------------------------------------------------- report ----
+  # Runs whichever phase the run reached. It reads state.json to learn where the
+  # run stopped and names that phase in the comment, so a killed run says how far
+  # it got instead of only that it died.
+  - id: report_outcome_on_issue
+    depends: push_and_open_pull_request
+    preconditions: *claimed
+    working_dir: ${env.PROJECT_WORKSPACE}
+    continue_on: *carry_on
+    run: >
+      ${consts.impl}/report-outcome.sh
+      "${env.PROJECT_REPO}"
+      "${consts.run_dir_root}/${claim_ready_issue.output.issue_number}/implement"
+      "${context.run.id}"
+      "${context.paths.log_file}"
+
+  - id: recover_stranded_label
+    depends: report_outcome_on_issue
+    preconditions: *claimed
+    working_dir: ${env.PROJECT_WORKSPACE}
+    run: >
+      ${consts.impl}/recover-stranded-label.sh
+      "${env.PROJECT_REPO}"
+      "${claim_ready_issue.output.issue_number}"
+      "${context.run.id}"
+      "${context.paths.log_file}"

@@ -1,2 +1,27 @@
 # Coding agent used by every AI-backed DAG. Supported values: codex, claude.
 agent: codex
+
+# Model tier -> concrete model, per agent. DAG steps ask for a tier
+# (fast | standard | deep) rather than a model name, so a DAG stays valid when
+# the agent above changes. This file is the only place a model name appears.
+#
+# The keys are flat on purpose: run-agent.sh reads them with awk, and a nested
+# block would need a YAML parser the worker image does not carry.
+#
+# `default` means "pass no model flag" -- the CLI uses whatever it is configured
+# with. An untuned tier therefore behaves exactly as it does today rather than
+# failing the run.
+model_claude_fast: haiku
+model_claude_standard: sonnet
+model_claude_deep: opus
+
+model_codex_fast: default
+model_codex_standard: default
+model_codex_deep: default
+
+# Codex expresses depth as reasoning effort rather than a different model, so it
+# gets a second axis. `default` leaves ~/.codex/config.toml's own
+# model_reasoning_effort alone.
+effort_codex_fast: low
+effort_codex_standard: medium
+effort_codex_deep: high

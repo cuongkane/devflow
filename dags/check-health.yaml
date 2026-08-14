@@ -12,7 +12,11 @@ steps:
       set -eu
       agent=$(awk '/^[[:space:]]*agent:[[:space:]]*/ {print $2; exit}' /Users/lexuancuong/CUONG/DAGU/agent.yaml)
       case "$agent" in codex|claude) ;; *) echo "Unsupported agent: $agent" >&2; exit 2 ;; esac
-      for bin in "$agent" gh git jq make docker; do
+      # openspec is here because the implementation DAG calls it from shell to
+      # validate and archive changes. It is a Volta global on the host and a
+      # plain npm global in the worker image, so it is the tool most likely to be
+      # present in one place and missing in the other.
+      for bin in "$agent" gh git jq make docker openspec; do
         printf '%-8s %s\n' "$bin" "$(command -v "$bin" || echo MISSING)"
         command -v "$bin" >/dev/null
       done

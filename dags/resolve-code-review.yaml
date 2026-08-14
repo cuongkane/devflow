@@ -69,7 +69,20 @@ steps:
       set -eu
       mkdir -p "$STATE_DIR"
       ${consts.bin_dir}/triage-issue.sh "${env.PROJECT_REPO}" "${ISSUE_NUMBER}" > "$STATE_DIR/decision.json"
-      echo "[triage] #${ISSUE_NUMBER} $(jq -c '.' "$STATE_DIR/decision.json")" >&2
+      action=$(jq -r '.action' "$STATE_DIR/decision.json")
+      if [ "$action" = none ]; then
+        echo "[triage] no work: no review item needs attention" >&2
+      else
+        issue_title=$(gh issue view "${ISSUE_NUMBER}" --repo "${env.PROJECT_REPO}" --json title --jq .title)
+        pr=$(jq -r '.pr // "none"' "$STATE_DIR/decision.json")
+        if [ "$pr" = none ]; then
+          pr_title="no pull request"
+        else
+          pr_title=$(gh pr view "$pr" --repo "${env.PROJECT_REPO}" --json title --jq .title)
+        fi
+        counts=$(jq -r '"threads=\(.unresolved // 0), reviews=\(.new_reviews // 0), comments=\(.new_comments // 0)"' "$STATE_DIR/decision.json")
+        echo "[triage] issue #${ISSUE_NUMBER}: $issue_title | PR #$pr: $pr_title | action=$action | feedback $counts" >&2
+      fi
       jq -r '.action' "$STATE_DIR/decision.json"
     output: ACTION
 
@@ -105,6 +118,7 @@ steps:
       set -u
       RUN_DIR="/tmp/dagu-agent/${ISSUE_NUMBER}/review"
       export RUN_DIR
+      started=$(date +%s)
 
       recover() {
         code=$?
@@ -125,6 +139,15 @@ steps:
       jq -r --argjson triage "$(cat "$RUN_DIR/triage.json")" \
         -f "${consts.bin_dir}/review-digest.jq" "$RUN_DIR/pr.json" > "$RUN_DIR/feedback.md"
       head_ref=$(jq -r '.head' "$RUN_DIR/triage.json")
+      issue_title=$(gh issue view "${ISSUE_NUMBER}" --repo "${env.PROJECT_REPO}" --json title --jq .title)
+      pr_title=$(jq -r '.title' "$RUN_DIR/pr.json")
+      unresolved=$(jq -r '.unresolved' "$RUN_DIR/triage.json")
+      new_reviews=$(jq -r '.new_reviews' "$RUN_DIR/triage.json")
+      new_comments=$(jq -r '.new_comments' "$RUN_DIR/triage.json")
+      printf 'issue:       #%s %s\n' "${ISSUE_NUMBER}" "$issue_title"
+      printf 'pull_request: #%s %s\n' "${PR_NUMBER}" "$pr_title"
+      printf 'branch:      %s\n' "$head_ref"
+      printf 'feedback:    %s threads, %s reviews, %s comments\n' "$unresolved" "$new_reviews" "$new_comments"
 
       sed -e "s|{{SKILL}}|${env.REVIEW_SKILL}|g" \
           -e "s|{{REPO}}|${env.PROJECT_REPO}|g" \
@@ -182,6 +205,20 @@ steps:
       esac
 
       ${consts.bin_dir}/set-state.sh "${env.PROJECT_REPO}" "${ISSUE_NUMBER}" "$state"
+      elapsed=$(( $(date +%s) - started ))
+      printf 'result:      %s\n' "$result_status"
+      printf 'transition:  agent:responding -> %s\n' "$state"
+      printf 'elapsed:     %dm%02ds\n' "$((elapsed / 60))" "$((elapsed % 60))"
+      case "$result_status" in
+        responded)
+          printf 'addressed:   %s\n' "$(field .addressed)"
+          printf 'left_open:   %s\n' "$(field .left_open)"
+          printf 'pushed:      %s\n' "$(field .pushed)"
+          ;;
+        nothing-to-do)
+          printf 'reason:      %s\n' "$(field .reason)"
+          ;;
+      esac
       trap - EXIT
       test "$result_status" != failed
     continue_on: skipped
@@ -199,6 +236,7 @@ steps:
       test "$(jq -r '.merged' "$RUN_DIR/pr.json")" = true
 
       head_ref=$(jq -r '.headRefName' "$RUN_DIR/pr.json")
+      title=$(jq -r '.title' "$RUN_DIR/pr.json")
       url=$(jq -r '.url' "$RUN_DIR/pr.json")
       state=$(gh issue view "${ISSUE_NUMBER}" --repo "${env.PROJECT_REPO}" --json state --jq '.state')
       if [ "$state" = OPEN ]; then
@@ -222,6 +260,10 @@ steps:
       fi
       git -C "${env.PROJECT_WORKSPACE}" worktree prune
       git -C "${env.PROJECT_WORKSPACE}" branch -d "$head_ref" 2>/dev/null || true
+      printf 'result:      finished\n'
+      printf 'issue:       #%s\n' "${ISSUE_NUMBER}"
+      printf 'pull_request: #%s %s\n' "${PR_NUMBER}" "$title"
+      printf 'transition:  agent:reviewing -> agent:finished\n'
     continue_on: skipped
 
   # `abandoned` is a pull request closed without merging; `orphan` is an issue
@@ -244,4 +286,8 @@ steps:
       fi
       gh issue comment "${ISSUE_NUMBER}" --repo "${env.PROJECT_REPO}" --body "$note"
       ${consts.bin_dir}/set-state.sh "${env.PROJECT_REPO}" "${ISSUE_NUMBER}" agent:failed
+      printf 'result:      %s\n' "${ACTION}"
+      printf 'issue:       #%s\n' "${ISSUE_NUMBER}"
+      printf 'pull_request: #%s\n' "${PR_NUMBER}"
+      printf 'transition:  agent:reviewing -> agent:failed\n'
     continue_on: skipped

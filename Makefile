@@ -1,6 +1,6 @@
 .DEFAULT_GOAL := help
 .PHONY: help up down restart logs ps open worker validate health state \
-        clarify implement respond close labels labels-prune clean
+        clarify implement phase verify respond close labels labels-prune clean
 
 # Host-side dagu CLI reads this project rather than ~/.config/dagu.
 export DAGU_HOME := $(CURDIR)
@@ -79,6 +79,19 @@ clarify: ## Clarify one issue now: make clarify ISSUE=42
 implement: ## Implement one issue now: make implement ISSUE=42
 	@test -n "$(ISSUE)" || { echo "usage: make implement ISSUE=<number>"; exit 1; }
 	dagu start dags/implement-clarified-task.yaml -- ISSUE_NUMBER=$(ISSUE)
+
+phase: ## Re-run one implementation phase: make phase ISSUE=42 PHASE=review
+	@test -n "$(ISSUE)" -a -n "$(PHASE)" \
+		|| { echo "usage: make phase ISSUE=<number> PHASE=<explore|propose|code|fix-verify|review|sync|pr-body>"; exit 1; }
+	@test -f /tmp/dagu-agent/$(ISSUE)/implement/state.json \
+		|| { echo "no run directory for issue $(ISSUE): run 'make implement ISSUE=$(ISSUE)' first"; exit 1; }
+	bin/implement/run-phase.sh "$(PHASE)" /tmp/dagu-agent/$(ISSUE)/implement \
+		"$(PROJECT_REPO)" "$(PROJECT_WORKSPACE)" "$(IMPLEMENT_SKILL)" \
+		"$(or $(TIER),deep)" "$(or $(BUDGET),3)"
+
+verify: ## Re-run the verification suite for one issue: make verify ISSUE=42
+	@test -n "$(ISSUE)" || { echo "usage: make verify ISSUE=<number>"; exit 1; }
+	bin/implement/run-verification.sh /tmp/dagu-agent/$(ISSUE)/implement manual
 
 respond: ## Resolve the current review state now: make respond ISSUE=42
 	@test -n "$(ISSUE)" || { echo "usage: make respond ISSUE=<number>"; exit 1; }

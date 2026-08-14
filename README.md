@@ -19,6 +19,16 @@ Change it to `agent: claude` to switch every AI-backed stage, then restart the
 worker. Both CLIs are installed in the worker image and use the host credentials
 mounted by Compose.
 
+The same file maps three **model tiers** — `fast`, `standard`, `deep` — to a
+concrete model for each agent. A DAG step asks for a tier, never a model, so
+switching the agent above leaves every step valid:
+
+```yaml
+model_claude_deep: opus
+model_codex_deep: default     # `default` means "pass no model flag"
+effort_codex_deep: high       # codex expresses depth as reasoning effort
+```
+
 ## Start it
 
 ```bash
@@ -157,13 +167,16 @@ agent.yaml                            global coding-agent selection
 project.env                          shared repository, workspace and skill defaults
 
 dags/clarify-task.yaml                poll -> claim -> clarify -> report
-dags/implement-clarified-task.yaml    poll -> claim -> implement -> report
+dags/implement-clarified-task.yaml    poll -> claim -> seven phases -> report
 dags/resolve-code-review.yaml         poll -> triage -> respond | finish
 dags/check-health.yaml                host worker health check
 
-prompts/clarify-issue.md              the three headless prompts, one per
-prompts/implement-issue.md            coding agent, each with its own
+prompts/clarify-issue.md              the headless prompts, each with its own
 prompts/respond-review.md             result.json exit contract
+prompts/implement/_preamble.md        shared by every implementation phase
+prompts/implement/{explore,propose,   one per phase of the implementation
+  code,fix-verify,review,sync,
+  pr-body}.md
 
 bin/relabel.sh                        guarded claim: swap FROM -> TO
 bin/set-state.sh                      unguarded report: force exactly one state
@@ -172,13 +185,88 @@ bin/triage-issue.sh                   issue -> pull request -> decision
 bin/pr-state.sh                       GraphQL dump of one pull request
 bin/pr-triage.jq                      the respond/close/idle decision
 bin/review-digest.jq                  outstanding feedback, as markdown
-run-agent.sh                          configured agent + live stream rendering
+
+bin/implement/state.sh                the run's shared state.json, read and write
+bin/implement/claim-ready-issue.sh    take the oldest ready issue
+bin/implement/fetch-issue-brief.sh    derive slug, branch, worktree, change name
+bin/implement/announce-start.sh       say on the issue that work has begun
+bin/implement/create-worktree.sh      git worktree add, deterministically
+bin/implement/build-prompt.sh         preamble + phase prompt, placeholders filled
+bin/implement/run-phase.sh            prompt -> agent at a model tier -> contract
+bin/implement/check-phase-result.sh   enforce one phase's exit contract
+bin/implement/run-verification.sh     the target repo's own test/lint/build set
+bin/implement/archive-change.sh       openspec archive --yes, then validate
+bin/implement/open-pull-request.sh    verify origin, commit, push, gh pr create
+bin/implement/report-outcome.sh       comment the outcome, name the failed phase
+
+run-agent.sh                          configured agent + tier + live streaming
 render-agent-stream.jq                shared Claude/Codex stream renderer
 
 data/  logs/                          runtime state (gitignored)
 ```
 
 DAG discovery is **not recursive** — `dags/` must stay flat.
+
+## The implementation phases
+
+Implementation used to be a single agent step: one prompt, a two-hour timeout,
+one $15 budget, and nothing in the run view to say whether it was exploring,
+writing code, or stuck. A run that died reported one undifferentiated failure and
+the next attempt started from nothing.
+
+It is now the skill's own phases, one step each:
+
+| Step | Kind | Tier | Budget | Timeout |
+|---|---|---|---|---|
+| `claim_ready_issue` | shell | — | — | — |
+| `fetch_issue_brief` | shell | — | — | — |
+| `announce_start_on_issue` | shell | — | — | — |
+| `create_feature_worktree` | shell | — | — | — |
+| `explore_codebase_context` | agent | fast | 1 | 15m |
+| `write_openspec_proposal` | agent | standard | 2 | 15m |
+| `write_code_and_tests` | agent | **deep** | 7 | 75m |
+| `run_verification_suite` | shell | — | — | 40m |
+| `fix_failing_checks` | agent | deep | 2 | 40m |
+| `rerun_verification_suite` | shell | — | — | 40m |
+| `review_and_fix_diff` | agent | **deep** | 3 | 30m |
+| `verify_after_review_fixes` | shell | — | — | 40m |
+| `sync_openspec_specs` | agent | fast | 1 | 15m |
+| `archive_openspec_change` | shell | — | — | 10m |
+| `write_pr_description` | agent | fast | 1 | 15m |
+| `push_and_open_pull_request` | shell | — | — | 15m |
+| `report_outcome_on_issue` | shell | — | — | — |
+
+The steps are one line each because their bodies live in `bin/implement/` and
+their prompts in `prompts/implement/`. This DAG only says what order things
+happen in; changing what a phase *does* means editing a script or a prompt.
+
+**Phases hand off through files, not through a session.** Each is a separate
+one-shot agent process with no memory of the last one. Everything durable is on
+disk: `state.json`, the worktree, and the OpenSpec change directory. That is what
+lets a single phase be re-run on its own against a run directory that already
+exists:
+
+```bash
+make phase ISSUE=42 PHASE=review     # re-run just the review, keeping everything else
+make verify ISSUE=42                 # re-run just the checks
+```
+
+**Identity is decided in shell, before any agent runs.** `fetch_issue_brief`
+derives the slug, branch (`feature/42-<slug>`), worktree path and OpenSpec change
+name from the issue and writes them to `state.json`. Previously the agent invented
+all four inside the opaque step, so nothing outside it could address them — which
+is precisely why the work could not be split. Each phase also stamps its name on
+`state.json`, so when a run is killed the report says which phase it died in and
+what survives on disk.
+
+**Deterministic phases have no model behind them.** The worktree, the verification
+commands, the archive, the push and the pull request are exact, checkable
+operations. `run_verification_suite` runs the target repository's own
+`make test-ci-migrations`, `make test-ci` and — only when `sweatcharge_fe/`
+changed — `yarn lint`, `yarn test:unit` and `yarn build`. Running them from shell
+turns the skill's rule that a frontend build must come from the *final* source
+state into a second step in the graph rather than a promise an agent has to keep
+two hours into a run.
 
 `resolve-code-review` owns both response and cleanup because both start from
 `agent:reviewing`. It inspects each pull request once and follows the appropriate
@@ -198,6 +286,16 @@ make clarify   ISSUE=42
 make implement ISSUE=42
 make respond   ISSUE=42
 make close     ISSUE=42
+```
+
+Implementation can also be resumed one phase at a time, against the run directory
+a previous attempt left behind. This is the point of the file-based handoff — it
+was impossible while implementation was a single step:
+
+```bash
+make phase  ISSUE=42 PHASE=review          # tier defaults to deep
+make phase  ISSUE=42 PHASE=code TIER=deep BUDGET=7
+make verify ISSUE=42                       # just the test/lint/build suite
 ```
 
 `dagu start` runs a DAG **locally**; only the queue dispatches to the worker.
@@ -261,6 +359,12 @@ session 63bd10ab-...  agent=codex
 == success  turns=47  cost_usd=3.81  2913s
 ```
 
+The surrounding orchestration steps also emit compact operational summaries:
+the selected issue and title, label transitions, clarification question counts,
+review-feedback counts, pull-request details, final outcome, and elapsed time.
+Queue polls explicitly say when there is no work, so an idle run is distinguishable
+from a silent or failed one.
+
 The dispatcher selects the provider-specific JSONL mode (`--json` for Codex or
 `--output-format stream-json` for Claude). The raw event stream is teed to
 `agent-stream.jsonl` for debugging; stderr stays a separate pane, because a
@@ -281,7 +385,11 @@ project configuration. Then run `make labels` for the target repo.
   shell as you, which is what makes them unattended. The containment is that
   none of them merges anything, and the closer only acts on a pull request
   GitHub reports as already merged. `--max-budget-usd` caps spend, not blast
-  radius: 4 for clarify, 15 for implement, 8 for respond.
+  radius: 4 for clarify, 8 for respond, and a per-phase budget for implement
+  (1 explore, 2 propose, 7 code, 2 fix, 3 review, 1 sync, 1 write-up) totalling
+  17. Splitting implementation into phases means several fresh agents re-read the
+  repository instead of one accumulating context, so expect the first runs to
+  cost more than the old single $15 step until the tiers and budgets are tuned.
 - **Two implementations at a time.** Each `implement-clarified-task` run claims
   one issue and exposes its full processing sequence as top-level DAG steps.
   Scheduled runs use the `implementation` queue, whose service-level
