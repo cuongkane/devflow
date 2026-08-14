@@ -95,7 +95,7 @@ invisible to every poller including the one that took it, so two agents cannot
 collide on the same issue — and you can move an issue anywhere in the pipeline
 by editing its label from the GitHub UI.
 
-`bin/relabel.sh` performs the claim and refuses if the issue is not in the state
+`scripts/relabel.sh` performs the claim and refuses if the issue is not in the state
 it expected. That is a check-then-act, not a compare-and-swap — GitHub has no
 conditional label write. The gap is closed by there being exactly one poller per
 label, and `overlap_policy: skip` on each poller so it never runs concurrently
@@ -115,7 +115,7 @@ nowhere else durable to put them:
 
 The third one solves a problem worth knowing about: the agent runs as **your**
 `gh` login, so every comment it writes carries your name. "Did a human write
-this?" cannot be answered from the author, so `bin/pr-triage.jq` answers it from
+this?" cannot be answered from the author, so `scripts/pr-triage.jq` answers it from
 that marker instead.
 
 The same file also treats a review thread as outstanding only when its newest
@@ -160,49 +160,52 @@ worker as trusted local infrastructure.
 ## Files
 
 ```
-compose.yaml                          dagu container
-service.yaml                          named queue concurrency limits
-Makefile                              every command you need
-agent.yaml                            global coding-agent selection
-project.env                          shared repository, workspace and skill defaults
+compose.yaml                             dagu container
+service.yaml                             named queue concurrency limits
+Makefile                                 every command you need
+agent.yaml                               global coding-agent selection
+project.env                              shared repository, workspace and skill defaults
 
-dags/clarify-task.yaml                poll -> claim -> clarify -> report
-dags/implement-clarified-task.yaml    poll -> claim -> seven phases -> report
-dags/resolve-code-review.yaml         poll -> triage -> respond | finish
-dags/check-health.yaml                host worker health check
+dags/clarify-task.yaml                   poll -> claim -> clarify -> report
+dags/implement-clarified-task.yaml       poll -> claim -> eight phases -> report
+dags/resolve-code-review.yaml            poll -> triage -> respond | finish
+dags/check-health.yaml                   host worker health check
 
-prompts/clarify-issue.md              the headless prompts, each with its own
-prompts/respond-review.md             result.json exit contract
-prompts/implement/_preamble.md        shared by every implementation phase
-prompts/implement/{explore,propose,   one per phase of the implementation
-  code,fix-verify,review,sync,
-  pr-body}.md
+prompts/clarify-issue.md                 the headless prompts, each with its own
+prompts/respond-review.md                result.json exit contract
+prompts/implement/_preamble.md           shared by every implementation phase
+prompts/implement/{explore,propose,      one per phase of the implementation
+  code,fix-verify,review,
+  resolve-review,sync,pr-body}.md
 
-bin/relabel.sh                        guarded claim: swap FROM -> TO
-bin/set-state.sh                      unguarded report: force exactly one state
-bin/pick-oldest.sh                    read a queue label, pick the oldest issue
-bin/triage-issue.sh                   issue -> pull request -> decision
-bin/pr-state.sh                       GraphQL dump of one pull request
-bin/pr-triage.jq                      the respond/close/idle decision
-bin/review-digest.jq                  outstanding feedback, as markdown
+scripts/relabel.sh                       guarded claim: swap FROM -> TO
+scripts/set-state.sh                     unguarded report: force exactly one state
+scripts/pick-oldest.sh                   read a queue label, pick the oldest issue
+scripts/triage-issue.sh                  issue -> pull request -> decision
+scripts/pr-state.sh                      GraphQL dump of one pull request
+scripts/pr-triage.jq                     the respond/close/idle decision
+scripts/review-digest.jq                 outstanding feedback, as markdown
 
-bin/implement/state.sh                the run's shared state.json, read and write
-bin/implement/claim-ready-issue.sh    take the oldest ready issue
-bin/implement/fetch-issue-brief.sh    derive slug, branch, worktree, change name
-bin/implement/announce-start.sh       say on the issue that work has begun
-bin/implement/create-worktree.sh      git worktree add, deterministically
-bin/implement/build-prompt.sh         preamble + phase prompt, placeholders filled
-bin/implement/run-phase.sh            prompt -> agent at a model tier -> contract
-bin/implement/check-phase-result.sh   enforce one phase's exit contract
-bin/implement/run-verification.sh     the target repo's own test/lint/build set
-bin/implement/archive-change.sh       openspec archive --yes, then validate
-bin/implement/open-pull-request.sh    verify origin, commit, push, gh pr create
-bin/implement/report-outcome.sh       comment the outcome, name the failed phase
+scripts/implement/state.sh               the run's shared state.json, read and write
+scripts/implement/claim-ready-issue.sh   take the oldest ready issue
+scripts/implement/fetch-issue-brief.sh   derive slug, branch, worktree, change name
+scripts/implement/announce-start.sh      say on the issue that work has begun
+scripts/implement/create-worktree.sh     git worktree add, deterministically
+scripts/implement/build-prompt.sh        preamble + phase prompt, placeholders filled
+scripts/implement/run-phase.sh           prompt -> agent at a model tier -> contract
+scripts/implement/check-phase-result.sh  enforce one phase's exit contract
+scripts/implement/run-verification.sh    the target repo's own test/lint/build set
+scripts/implement/verify-until-green.sh  run it, fix what fails, repeat
+scripts/implement/resolve-review-comments.sh
+                                         act on review-comments.md, then verify
+scripts/implement/archive-change.sh      openspec archive --yes, then validate
+scripts/implement/open-pull-request.sh   verify origin, commit, push, gh pr create
+scripts/implement/report-outcome.sh      comment the outcome, name the failed phase
 
-run-agent.sh                          configured agent + tier + live streaming
-render-agent-stream.jq                shared Claude/Codex stream renderer
+run-agent.sh                             configured agent + tier + live streaming
+render-agent-stream.jq                   shared Claude/Codex stream renderer
 
-data/  logs/                          runtime state (gitignored)
+data/  logs/                             runtime state (gitignored)
 ```
 
 DAG discovery is **not recursive** — `dags/` must stay flat.
@@ -225,18 +228,16 @@ It is now the skill's own phases, one step each:
 | `explore_codebase_context` | agent | fast | 1 | 15m |
 | `write_openspec_proposal` | agent | standard | 2 | 15m |
 | `write_code_and_tests` | agent | **deep** | 7 | 75m |
-| `run_verification_suite` | shell | — | — | 40m |
-| `fix_failing_checks` | agent | deep | 2 | 40m |
-| `rerun_verification_suite` | shell | — | — | 40m |
-| `review_and_fix_diff` | agent | **deep** | 3 | 30m |
-| `verify_after_review_fixes` | shell | — | — | 40m |
+| `verify_until_green` | shell + agent | deep | 2 × 2 | 2h |
+| `review_code` | agent | **deep** | 3 | 30m |
+| `resolve_review_comment` | agent + shell | deep | 3 + 2 | 2h |
 | `sync_openspec_specs` | agent | fast | 1 | 15m |
 | `archive_openspec_change` | shell | — | — | 10m |
 | `write_pr_description` | agent | fast | 1 | 15m |
 | `push_and_open_pull_request` | shell | — | — | 15m |
 | `report_outcome_on_issue` | shell | — | — | — |
 
-The steps are one line each because their bodies live in `bin/implement/` and
+The steps are one line each because their bodies live in `scripts/implement/` and
 their prompts in `prompts/implement/`. This DAG only says what order things
 happen in; changing what a phase *does* means editing a script or a prompt.
 
@@ -248,7 +249,8 @@ exists:
 
 ```bash
 make phase ISSUE=42 PHASE=review     # re-run just the review, keeping everything else
-make verify ISSUE=42                 # re-run just the checks
+make verify ISSUE=42                 # re-run the checks, fixing until they pass
+make verify ISSUE=42 ATTEMPTS=1      # run the checks once and report, no model
 ```
 
 **Identity is decided in shell, before any agent runs.** `fetch_issue_brief`
@@ -261,12 +263,21 @@ what survives on disk.
 
 **Deterministic phases have no model behind them.** The worktree, the verification
 commands, the archive, the push and the pull request are exact, checkable
-operations. `run_verification_suite` runs the target repository's own
+operations. `run-verification.sh` runs the target repository's own
 `make test-ci-migrations`, `make test-ci` and — only when `sweatcharge_fe/`
 changed — `yarn lint`, `yarn test:unit` and `yarn build`. Running them from shell
 turns the skill's rule that a frontend build must come from the *final* source
 state into a second step in the graph rather than a promise an agent has to keep
 two hours into a run.
+
+**Verification is one step that loops.** `verify_until_green` runs the suite; if it
+fails it runs the `fix-verify` phase and runs the suite again, up to three
+attempts, and only its own exit status ends the run. It replaces an unrolled
+run → fix → rerun chain gated on `verify.status` files, which allowed exactly one
+fix and spent three lines of the run view saying so. The verdict stays in shell on
+every attempt — the agent reacts to a failing suite, it never declares the suite
+passed. Failed attempts are kept as `verify.<stage>-<n>.log` so a long fight is
+readable afterwards, and the fix prompt is told to read the previous one.
 
 `resolve-code-review` owns both response and cleanup because both start from
 `agent:reviewing`. It inspects each pull request once and follows the appropriate
@@ -295,7 +306,8 @@ was impossible while implementation was a single step:
 ```bash
 make phase  ISSUE=42 PHASE=review          # tier defaults to deep
 make phase  ISSUE=42 PHASE=code TIER=deep BUDGET=7
-make verify ISSUE=42                       # just the test/lint/build suite
+make verify ISSUE=42                       # the test/lint/build suite, fixing until green
+make verify ISSUE=42 ATTEMPTS=1            # the suite once, no fix agent
 ```
 
 `dagu start` runs a DAG **locally**; only the queue dispatches to the worker.
@@ -386,8 +398,8 @@ project configuration. Then run `make labels` for the target repo.
   none of them merges anything, and the closer only acts on a pull request
   GitHub reports as already merged. `--max-budget-usd` caps spend, not blast
   radius: 4 for clarify, 8 for respond, and a per-phase budget for implement
-  (1 explore, 2 propose, 7 code, 2 fix, 3 review, 1 sync, 1 write-up) totalling
-  17. Splitting implementation into phases means several fresh agents re-read the
+  (1 explore, 2 propose, 7 code, 2 fix, 3 review, 3 resolve-review, 1 sync,
+  1 write-up) totalling 20. Splitting implementation into phases means several fresh agents re-read the
   repository instead of one accumulating context, so expect the first runs to
   cost more than the old single $15 step until the tiers and budgets are tuned.
 - **Two implementations at a time.** Each `implement-clarified-task` run claims

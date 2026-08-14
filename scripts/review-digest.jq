@@ -3,7 +3,7 @@
 #
 #   jq -r --argjson triage "$(cat triage.json)" -f review-digest.jq pr.json
 #
-# $triage supplies `since` so this file and bin/pr-triage.jq cannot drift on
+# $triage supplies `since` so this file and scripts/pr-triage.jq cannot drift on
 # what counts as new.
 def marker: "<!-- agent:responded -->";
 

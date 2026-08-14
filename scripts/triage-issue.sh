@@ -3,7 +3,7 @@
 #
 #   triage-issue.sh <repo> <issue>
 #
-# Emits the bin/pr-triage.jq decision object on stdout, with two extra actions
+# Emits the scripts/pr-triage.jq decision object on stdout, with two extra actions
 # this layer can determine on its own:
 #
 #   none     no issue was passed (the queue was empty)

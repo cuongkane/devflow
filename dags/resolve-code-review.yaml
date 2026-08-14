@@ -20,14 +20,14 @@ params:
 #
 # The interesting problem this solves: the agent posts as the repository
 # owner's own gh login, so "was that comment written by a human?" cannot be
-# answered from the author. bin/pr-triage.jq answers it from an
+# answered from the author. scripts/pr-triage.jq answers it from an
 # `<!-- agent:responded -->` marker instead, and treats review threads as
 # outstanding only when their newest comment is newer than that marker -- which
 # is what stops a thread the agent replied to but did not resolve from
 # re-triggering it every ten minutes forever.
 
 consts:
-  - bin_dir: /Users/lexuancuong/CUONG/DAGU/bin
+  - scripts_dir: /Users/lexuancuong/CUONG/DAGU/scripts
   - prompts_dir: /Users/lexuancuong/CUONG/DAGU/prompts
   - agent_runner: /Users/lexuancuong/CUONG/DAGU/run-agent.sh
   - budget_usd: "8"
@@ -49,7 +49,7 @@ steps:
       queued=$(gh issue list --repo "${env.PROJECT_REPO}" --label agent:reviewing \
         --state open --limit 200 --json number)
       for issue in $(printf '%s' "$queued" | jq -r 'sort_by(.number) | .[].number'); do
-        action=$(${consts.bin_dir}/triage-issue.sh "${env.PROJECT_REPO}" "$issue" | jq -r '.action')
+        action=$(${consts.scripts_dir}/triage-issue.sh "${env.PROJECT_REPO}" "$issue" | jq -r '.action')
         if [ "$action" != "idle" ]; then
           echo "$issue"
           exit 0
@@ -68,7 +68,7 @@ steps:
     run: |
       set -eu
       mkdir -p "$STATE_DIR"
-      ${consts.bin_dir}/triage-issue.sh "${env.PROJECT_REPO}" "${ISSUE_NUMBER}" > "$STATE_DIR/decision.json"
+      ${consts.scripts_dir}/triage-issue.sh "${env.PROJECT_REPO}" "${ISSUE_NUMBER}" > "$STATE_DIR/decision.json"
       action=$(jq -r '.action' "$STATE_DIR/decision.json")
       if [ "$action" = none ]; then
         echo "[triage] no work: no review item needs attention" >&2
@@ -97,7 +97,7 @@ steps:
       - condition: 'test "${ACTION}" = "respond"'
     run: |
       set -u
-      if ${consts.bin_dir}/relabel.sh "${env.PROJECT_REPO}" "${ISSUE_NUMBER}" agent:reviewing agent:responding; then
+      if ${consts.scripts_dir}/relabel.sh "${env.PROJECT_REPO}" "${ISSUE_NUMBER}" agent:reviewing agent:responding; then
         echo yes
       else
         echo no
@@ -124,7 +124,7 @@ steps:
         code=$?
         if gh issue view "${ISSUE_NUMBER}" --repo "${env.PROJECT_REPO}" \
              --json labels --jq '.labels[].name' | grep -qx agent:responding; then
-          ${consts.bin_dir}/set-state.sh "${env.PROJECT_REPO}" "${ISSUE_NUMBER}" agent:failed
+          ${consts.scripts_dir}/set-state.sh "${env.PROJECT_REPO}" "${ISSUE_NUMBER}" agent:failed
           gh issue comment "${ISSUE_NUMBER}" --repo "${env.PROJECT_REPO}" \
             --body "Review-response run \`${context.run.id}\` failed before reporting. Log: ${context.paths.log_file}" || true
         fi
@@ -134,10 +134,10 @@ steps:
 
       mkdir -p "$RUN_DIR"
       rm -f "$RUN_DIR/result.json" "$RUN_DIR/report.md"
-      ${consts.bin_dir}/pr-state.sh "${env.PROJECT_REPO}" "${PR_NUMBER}" > "$RUN_DIR/pr.json"
-      jq -f "${consts.bin_dir}/pr-triage.jq" "$RUN_DIR/pr.json" > "$RUN_DIR/triage.json"
+      ${consts.scripts_dir}/pr-state.sh "${env.PROJECT_REPO}" "${PR_NUMBER}" > "$RUN_DIR/pr.json"
+      jq -f "${consts.scripts_dir}/pr-triage.jq" "$RUN_DIR/pr.json" > "$RUN_DIR/triage.json"
       jq -r --argjson triage "$(cat "$RUN_DIR/triage.json")" \
-        -f "${consts.bin_dir}/review-digest.jq" "$RUN_DIR/pr.json" > "$RUN_DIR/feedback.md"
+        -f "${consts.scripts_dir}/review-digest.jq" "$RUN_DIR/pr.json" > "$RUN_DIR/feedback.md"
       head_ref=$(jq -r '.head' "$RUN_DIR/triage.json")
       issue_title=$(gh issue view "${ISSUE_NUMBER}" --repo "${env.PROJECT_REPO}" --json title --jq .title)
       pr_title=$(jq -r '.title' "$RUN_DIR/pr.json")
@@ -204,7 +204,7 @@ steps:
           ;;
       esac
 
-      ${consts.bin_dir}/set-state.sh "${env.PROJECT_REPO}" "${ISSUE_NUMBER}" "$state"
+      ${consts.scripts_dir}/set-state.sh "${env.PROJECT_REPO}" "${ISSUE_NUMBER}" "$state"
       elapsed=$(( $(date +%s) - started ))
       printf 'result:      %s\n' "$result_status"
       printf 'transition:  agent:responding -> %s\n' "$state"
@@ -232,7 +232,7 @@ steps:
       set -eu
       RUN_DIR="/tmp/dagu-agent/${ISSUE_NUMBER}/close"
       mkdir -p "$RUN_DIR"
-      ${consts.bin_dir}/pr-state.sh "${env.PROJECT_REPO}" "${PR_NUMBER}" > "$RUN_DIR/pr.json"
+      ${consts.scripts_dir}/pr-state.sh "${env.PROJECT_REPO}" "${PR_NUMBER}" > "$RUN_DIR/pr.json"
       test "$(jq -r '.merged' "$RUN_DIR/pr.json")" = true
 
       head_ref=$(jq -r '.headRefName' "$RUN_DIR/pr.json")
@@ -243,7 +243,7 @@ steps:
         gh issue close "${ISSUE_NUMBER}" --repo "${env.PROJECT_REPO}" \
           --reason completed --comment "Closed by merged pull request $url."
       fi
-      ${consts.bin_dir}/set-state.sh "${env.PROJECT_REPO}" "${ISSUE_NUMBER}" agent:finished
+      ${consts.scripts_dir}/set-state.sh "${env.PROJECT_REPO}" "${ISSUE_NUMBER}" agent:finished
 
       # Cleanup is best-effort: delivery is already complete at this point.
       set +e
@@ -285,7 +285,7 @@ steps:
       so there is no pull request to follow. Relabel it \`agent:todo\` to start again from clarification."
       fi
       gh issue comment "${ISSUE_NUMBER}" --repo "${env.PROJECT_REPO}" --body "$note"
-      ${consts.bin_dir}/set-state.sh "${env.PROJECT_REPO}" "${ISSUE_NUMBER}" agent:failed
+      ${consts.scripts_dir}/set-state.sh "${env.PROJECT_REPO}" "${ISSUE_NUMBER}" agent:failed
       printf 'result:      %s\n' "${ACTION}"
       printf 'issue:       #%s\n' "${ISSUE_NUMBER}"
       printf 'pull_request: #%s\n' "${PR_NUMBER}"

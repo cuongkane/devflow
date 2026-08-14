@@ -15,8 +15,8 @@
 # The skill states that a frontend build is mandatory whenever frontend source
 # changes and must come from the final source state; as prose that is a promise
 # the agent has to remember across a two-hour run. Here it is a conditional and a
-# second edge in the graph -- the review phase is followed by another invocation
-# of this same DAG, so "after the last fix" is structural.
+# second edge in the graph -- resolving the review's comments is followed by
+# another invocation of this same script, so "after the last fix" is structural.
 #
 # The exit status is the verdict. `verify.log` holds the output for the agent
 # that gets called to fix a failure, since the DAG's own step log is not a file
@@ -40,6 +40,14 @@ verdict="$run_dir/$label.status"
 echo fail > "$verdict"
 
 failed=0
+
+# Compose names a project after the directory holding the compose file, which is
+# `deployments` in every worktree. Two issues verifying at once would then share
+# one stack, and the first `test-ci-down` would tear the other one's containers
+# out from under it. Give each worktree its own project namespace.
+COMPOSE_PROJECT_NAME=swc-$(basename "$worktree" | tr '[:upper:]' '[:lower:]' \
+  | tr -c 'a-z0-9_-' '-')
+export COMPOSE_PROJECT_NAME
 
 step() {
   name=$1

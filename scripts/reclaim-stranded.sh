@@ -36,7 +36,7 @@ working=$2
 queue=$3
 max_age_min=$4
 
-bin_dir=$(cd "$(dirname "$0")" && pwd)
+scripts_dir=$(cd "$(dirname "$0")" && pwd)
 
 log() { echo "[reclaim $working] $*" >&2; }
 

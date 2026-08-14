@@ -1,8 +1,9 @@
-## Phase: review the diff and fix what it finds
+## Phase: review the diff
 
-Review the complete branch diff as a reviewer would, then fix what you find. The
-verification suite has already passed — this phase is for what a green suite does
-not catch.
+Review the complete branch diff as a reviewer would and write down what you find.
+**Do not fix anything in this phase.** A separate phase resolves your comments and
+re-runs the verification suite; keeping the two apart means the findings are on
+disk and attributable rather than folded silently into the diff.
 
 ```bash
 git -C {{WORKTREE}} diff {{BASE}}...HEAD
@@ -26,16 +27,28 @@ not merely internal consistency.
 - Accidental files: generated output, secrets, local environment files, debris
   from your own debugging, anything unrelated to this change.
 
-## Then fix
+## What to write
 
-Fix everything critical and important. Add the test that would have caught each
-defect you fix. Re-read the resulting diff — your fixes are also unreviewed code.
+Write your comments to `{{RUN_DIR}}/review-comments.md`, in severity order, one
+section per finding:
 
-Leave a genuinely minor nit alone rather than growing the diff for it; note it in
-your summary instead.
+```markdown
+### <critical|important|minor> — <file>:<line> — <one-line title>
+
+What is wrong, why it is wrong against the requirement, and what the fix should
+be. Name the test that is missing, if one is.
+```
+
+Raise only what is worth changing. A genuinely minor nit belongs in the file
+marked `minor` — the resolving phase is told to leave those alone unless they are
+free — not as a paragraph of prose.
+
+If the diff is sound and there is nothing to change, write exactly `NONE` as the
+first line of the file and nothing else. That is a real outcome, and the pipeline
+reads it: it skips the resolving agent entirely and goes straight to verification.
 
 ## Boundaries
 
-The verification suite runs again from shell after you finish, so any code you
-touch here is re-checked from the final source state. Do not sync specs, archive,
-push, or open a pull request.
+Do not edit code, tests, specs, or configuration. Do not sync specs, archive,
+push, or open a pull request. The only file you write is
+`{{RUN_DIR}}/review-comments.md` and your `result.json`.

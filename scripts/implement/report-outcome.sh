@@ -16,7 +16,7 @@ run_dir=$2
 run_id=$3
 log_file=$4
 here=$(cd "$(dirname "$0")" && pwd)
-bin_dir=$(cd "$here/.." && pwd)
+scripts_dir=$(cd "$here/.." && pwd)
 
 issue=$("$here/state.sh" get "$run_dir" issue)
 phase=$("$here/state.sh" get "$run_dir" phase)
@@ -112,7 +112,7 @@ if [ "$outcome" = failed ]; then
 fi
 
 gh issue comment "$issue" --repo "$repo" --body-file "$body"
-"$bin_dir/set-state.sh" "$repo" "$issue" "$state"
+"$scripts_dir/set-state.sh" "$repo" "$issue" "$state"
 
 started=$(cat "$run_dir/started_at" 2>/dev/null || date +%s)
 elapsed=$(( $(date +%s) - started ))

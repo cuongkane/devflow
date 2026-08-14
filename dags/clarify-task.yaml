@@ -17,7 +17,7 @@ params:
 
 consts:
   - prompts_dir: /Users/lexuancuong/CUONG/DAGU/prompts
-  - bin_dir: /Users/lexuancuong/CUONG/DAGU/bin
+  - scripts_dir: /Users/lexuancuong/CUONG/DAGU/scripts
   - agent_runner: /Users/lexuancuong/CUONG/DAGU/run-agent.sh
   - budget_usd: "4"
 
@@ -29,7 +29,7 @@ steps:
         echo "[pick] manual issue #${params.ISSUE_NUMBER}" >&2
         echo "${params.ISSUE_NUMBER}"
       else
-        issue=$(${consts.bin_dir}/pick-oldest.sh "${env.PROJECT_REPO}" agent:todo agent:clarifying)
+        issue=$(${consts.scripts_dir}/pick-oldest.sh "${env.PROJECT_REPO}" agent:todo agent:clarifying)
         if [ "$issue" = none ]; then
           echo "[pick] no work: agent:todo is empty" >&2
         else
@@ -45,7 +45,7 @@ steps:
       - condition: 'test "${ISSUE_NUMBER}" != "none"'
     run: |
       set -u
-      if ${consts.bin_dir}/relabel.sh "${env.PROJECT_REPO}" "${ISSUE_NUMBER}" agent:todo agent:clarifying; then
+      if ${consts.scripts_dir}/relabel.sh "${env.PROJECT_REPO}" "${ISSUE_NUMBER}" agent:todo agent:clarifying; then
         echo "[claim] #${ISSUE_NUMBER}: agent:todo -> agent:clarifying" >&2
         echo yes
       else
@@ -192,7 +192,7 @@ steps:
       esac
 
       gh issue comment "${ISSUE_NUMBER}" --repo "${env.PROJECT_REPO}" --body-file "$body"
-      ${consts.bin_dir}/set-state.sh "${env.PROJECT_REPO}" "${ISSUE_NUMBER}" "$state"
+      ${consts.scripts_dir}/set-state.sh "${env.PROJECT_REPO}" "${ISSUE_NUMBER}" "$state"
 
       started=$(cat "$RUN_DIR/started_at" 2>/dev/null || date +%s)
       elapsed=$(( $(date +%s) - started ))
@@ -220,7 +220,7 @@ handler_on:
     run: |
       if gh issue view "${ISSUE_NUMBER}" --repo "${env.PROJECT_REPO}" \
            --json labels --jq '.labels[].name' | grep -qx "agent:clarifying"; then
-        ${consts.bin_dir}/set-state.sh "${env.PROJECT_REPO}" "${ISSUE_NUMBER}" "agent:failed"
+        ${consts.scripts_dir}/set-state.sh "${env.PROJECT_REPO}" "${ISSUE_NUMBER}" "agent:failed"
         gh issue comment "${ISSUE_NUMBER}" --repo "${env.PROJECT_REPO}" \
           --body "Clarification run \`${context.run.id}\` failed before reporting. Log: ${context.paths.log_file}"
       fi

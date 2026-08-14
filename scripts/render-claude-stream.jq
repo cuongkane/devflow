@@ -1,5 +1,5 @@
 # Renders `claude --output-format stream-json` into something readable in the
-# dagu run view. Used by bin/run-claude.sh; kept in one file so a fix here
+# dagu run view. Used by scripts/run-claude.sh; kept in one file so a fix here
 # reaches every agent DAG at once.
 if .type == "system" and .subtype == "init" then
   "session \(.session_id // "?")  model=\(.model // "?")"

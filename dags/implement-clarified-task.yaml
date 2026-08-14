@@ -17,7 +17,7 @@ max_output_size: 10485760
 # OpenSpec change directory -- not through a live session, so a single phase can
 # be re-run on its own against a run directory that already exists.
 #
-# The steps stay one line each because their bodies live in bin/implement/ and
+# The steps stay one line each because their bodies live in scripts/implement/ and
 # their prompts in prompts/implement/. Editing what a phase *does* means editing a
 # script or a prompt; this file only says what order they happen in.
 #
@@ -38,7 +38,7 @@ params:
     description: Optional issue to claim immediately instead of polling the queue
 
 consts:
-  - impl: /Users/lexuancuong/CUONG/DAGU/bin/implement
+  - impl: /Users/lexuancuong/CUONG/DAGU/scripts/implement
   - run_dir_root: /tmp/dagu-agent
 
 steps:
@@ -144,55 +144,31 @@ steps:
       deep 7
 
   # -------------------------------------------------------- verification ----
-  # The target repository's own commands, run from shell. Previously this was a
-  # promise the agent had to keep two hours into a run; here it is a step that
-  # either passes or does not.
-  - id: run_verification_suite
+  # One step, not three. The target repository's own commands run from shell and
+  # their exit status is the verdict; when they fail, the fix phase runs and the
+  # suite runs again, in a loop inside the step. It was previously an unrolled
+  # run/fix/rerun chain gated on preconditions -- which put a hard ceiling of one
+  # fix on the graph, and spent three lines of the run view saying so.
+  - id: verify_until_green
     depends: write_code_and_tests
     preconditions: *claimed
-    timeout_sec: 2400
-    continue_on: *carry_on     # a failure here is work for the next step
-    run: >
-      ${consts.impl}/run-verification.sh
-      "${consts.run_dir_root}/${claim_ready_issue.output.issue_number}/implement"
-      verify
-
-  # A dagu precondition is a shell test, so the verdict is read from the file
-  # run-verification.sh writes rather than from the previous step's exit code.
-  - id: fix_failing_checks
-    depends: run_verification_suite
-    preconditions:
-      - condition: 'test "${claim_ready_issue.output.claimed}" = "true"'
-      - condition: 'test "$(cat "${consts.run_dir_root}/${claim_ready_issue.output.issue_number}/implement/verify.status")" = "fail"'
-    working_dir: ${env.PROJECT_WORKSPACE}
-    timeout_sec: 2400
+    timeout_sec: 7200          # the whole loop, not one pass of the suite
     retry_policy: *no_retry
-    continue_on:
-      failure: true
-      skipped: true            # skipped is the good case: the suite already passed
+    continue_on: *carry_on
     run: >
-      ${consts.impl}/run-phase.sh fix-verify
+      ${consts.impl}/verify-until-green.sh
       "${consts.run_dir_root}/${claim_ready_issue.output.issue_number}/implement"
       "${env.PROJECT_REPO}" "${env.PROJECT_WORKSPACE}" "${env.IMPLEMENT_SKILL}"
-      deep 2
-
-  - id: rerun_verification_suite
-    depends: fix_failing_checks
-    preconditions:
-      - condition: 'test "${claim_ready_issue.output.claimed}" = "true"'
-      - condition: 'test "$(cat "${consts.run_dir_root}/${claim_ready_issue.output.issue_number}/implement/verify.status")" = "fail"'
-    timeout_sec: 2400
-    continue_on:
-      failure: true
-      skipped: true
-    run: >
-      ${consts.impl}/run-verification.sh
-      "${consts.run_dir_root}/${claim_ready_issue.output.issue_number}/implement"
-      verify-retry
+      3 deep 2 verify
 
   # ------------------------------------------------------------- review ----
-  - id: review_and_fix_diff
-    depends: rerun_verification_suite
+  # Reviewing and fixing are two steps, not one. The review writes its findings to
+  # `review-comments.md` and changes nothing; the next step acts on that file. The
+  # cost is one extra agent run; what it buys is a reviewer's verdict that exists
+  # on disk as a reviewable artefact instead of dissolving into the diff, and a
+  # visible answer to "did the review actually find anything?".
+  - id: review_code
+    depends: verify_until_green
     preconditions: *claimed
     working_dir: ${env.PROJECT_WORKSPACE}
     timeout_sec: 1800
@@ -204,22 +180,28 @@ steps:
       "${env.PROJECT_REPO}" "${env.PROJECT_WORKSPACE}" "${env.IMPLEMENT_SKILL}"
       deep 3
 
-  # The skill requires the frontend production build to come from the *final*
-  # source state. Running the same checks again after the review's fixes makes
-  # that structural instead of something an agent has to remember.
-  - id: verify_after_review_fixes
-    depends: review_and_fix_diff
+  # Resolve the comments, then verify -- one step, because the two are not
+  # independent. The fixes made here are unreviewed code, the skill requires the
+  # frontend production build to come from the *final* source state, and a review
+  # fix that broke something should get fixed rather than end the run red one step
+  # from the pull request. A review that found nothing skips the agent and costs
+  # one clean pass of the suite.
+  - id: resolve_review_comment
+    depends: review_code
+    working_dir: ${env.PROJECT_WORKSPACE}
     preconditions: *claimed
-    timeout_sec: 2400
+    timeout_sec: 7200
+    retry_policy: *no_retry
     continue_on: *carry_on
     run: >
-      ${consts.impl}/run-verification.sh
+      ${consts.impl}/resolve-review-comments.sh
       "${consts.run_dir_root}/${claim_ready_issue.output.issue_number}/implement"
-      verify-final
+      "${env.PROJECT_REPO}" "${env.PROJECT_WORKSPACE}" "${env.IMPLEMENT_SKILL}"
+      deep 3 2
 
   # ------------------------------------------------ specifications, then PR ----
   - id: sync_openspec_specs
-    depends: verify_after_review_fixes
+    depends: resolve_review_comment
     preconditions: *claimed
     working_dir: ${env.PROJECT_WORKSPACE}
     timeout_sec: 900

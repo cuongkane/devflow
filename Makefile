@@ -82,16 +82,20 @@ implement: ## Implement one issue now: make implement ISSUE=42
 
 phase: ## Re-run one implementation phase: make phase ISSUE=42 PHASE=review
 	@test -n "$(ISSUE)" -a -n "$(PHASE)" \
-		|| { echo "usage: make phase ISSUE=<number> PHASE=<explore|propose|code|fix-verify|review|sync|pr-body>"; exit 1; }
+		|| { echo "usage: make phase ISSUE=<number> PHASE=<explore|propose|code|fix-verify|review|resolve-review|sync|pr-body>"; exit 1; }
 	@test -f /tmp/dagu-agent/$(ISSUE)/implement/state.json \
 		|| { echo "no run directory for issue $(ISSUE): run 'make implement ISSUE=$(ISSUE)' first"; exit 1; }
-	bin/implement/run-phase.sh "$(PHASE)" /tmp/dagu-agent/$(ISSUE)/implement \
+	scripts/implement/run-phase.sh "$(PHASE)" /tmp/dagu-agent/$(ISSUE)/implement \
 		"$(PROJECT_REPO)" "$(PROJECT_WORKSPACE)" "$(IMPLEMENT_SKILL)" \
 		"$(or $(TIER),deep)" "$(or $(BUDGET),3)"
 
-verify: ## Re-run the verification suite for one issue: make verify ISSUE=42
-	@test -n "$(ISSUE)" || { echo "usage: make verify ISSUE=<number>"; exit 1; }
-	bin/implement/run-verification.sh /tmp/dagu-agent/$(ISSUE)/implement manual
+verify: ## Verify one issue, fixing until green: make verify ISSUE=42 [ATTEMPTS=3]
+	@test -n "$(ISSUE)" || { echo "usage: make verify ISSUE=<number> [ATTEMPTS=n]"; exit 1; }
+	@test -f /tmp/dagu-agent/$(ISSUE)/implement/state.json \
+		|| { echo "no run directory for issue $(ISSUE): run 'make implement ISSUE=$(ISSUE)' first"; exit 1; }
+	scripts/implement/verify-until-green.sh /tmp/dagu-agent/$(ISSUE)/implement \
+		"$(PROJECT_REPO)" "$(PROJECT_WORKSPACE)" "$(IMPLEMENT_SKILL)" \
+		"$(or $(ATTEMPTS),3)" deep 2 manual
 
 respond: ## Resolve the current review state now: make respond ISSUE=42
 	@test -n "$(ISSUE)" || { echo "usage: make respond ISSUE=<number>"; exit 1; }

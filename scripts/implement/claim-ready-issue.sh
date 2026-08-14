@@ -18,10 +18,10 @@ set -eu
 
 repo=$1
 issue=${2:-}
-bin_dir=$(cd "$(dirname "$0")/.." && pwd)
+scripts_dir=$(cd "$(dirname "$0")/.." && pwd)
 
 if [ -z "$issue" ]; then
-  issue=$("$bin_dir/pick-oldest.sh" "$repo" agent:ready-to-implement agent:implementing) || exit 1
+  issue=$("$scripts_dir/pick-oldest.sh" "$repo" agent:ready-to-implement agent:implementing) || exit 1
 fi
 
 if [ "$issue" = none ]; then
@@ -31,7 +31,7 @@ if [ "$issue" = none ]; then
     issue_number: "",
     message: "No issue is currently ready to implement. This poll completed without work."
   }'
-elif "$bin_dir/relabel.sh" "$repo" "$issue" agent:ready-to-implement agent:implementing; then
+elif "$scripts_dir/relabel.sh" "$repo" "$issue" agent:ready-to-implement agent:implementing; then
   echo "[claim] #$issue: agent:ready-to-implement -> agent:implementing" >&2
   jq -nc --arg issue "$issue" '{
     claimed: true,

@@ -11,21 +11,47 @@ ARG CLAUDE_CODE_VERSION=2.1.232
 # not mounted, and mounting it would drag in a macOS toolchain anyway.
 ARG OPENSPEC_VERSION=1.4.1
 
+# SweatCharge runs its Django suite through `docker compose run` against the
+# mounted host socket, so the worker needs Compose v2. Debian's `docker.io` is
+# CLI 20.10 with no plugin directory at all, so take the CLI and the plugin from
+# Docker's own repository instead.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         ca-certificates \
-        docker.io \
+        curl \
         gh \
         git \
+        gnupg \
         jq \
         make \
         openssh-client \
         tini \
+    && install -m 0755 -d /etc/apt/keyrings \
+    && curl -fsSL https://download.docker.com/linux/debian/gpg \
+        -o /etc/apt/keyrings/docker.asc \
+    && chmod a+r /etc/apt/keyrings/docker.asc \
+    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] \
+https://download.docker.com/linux/debian bookworm stable" \
+        > /etc/apt/sources.list.d/docker.list \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends \
+        docker-ce-cli \
+        docker-compose-plugin \
     && rm -rf /var/lib/apt/lists/* \
     && npm install --global \
         "@openai/codex@${CODEX_VERSION}" \
         "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" \
         "@fission-ai/openspec@${OPENSPEC_VERSION}"
+
+# sweatcharge_fe pins yarn 4.9.2 through `packageManager`, which Corepack
+# enforces; the node image ships yarn 1.22 as a plain global, so every `yarn`
+# call aborts before it runs. Replace those shims and bake the pinned release
+# into the image so the first run does not have to fetch it.
+ARG YARN_VERSION=4.9.2
+ENV COREPACK_ENABLE_DOWNLOAD_PROMPT=0
+RUN rm -f /usr/local/bin/yarn /usr/local/bin/yarnpkg \
+    && corepack enable \
+    && corepack install --global "yarn@${YARN_VERSION}"
 
 COPY --from=dagu /usr/local/bin/dagu /usr/local/bin/dagu
 COPY worker-entrypoint.sh /usr/local/bin/worker-entrypoint

@@ -1,5 +1,5 @@
 # Decide what should happen to a pull request, from the JSON that
-# bin/pr-state.sh emits. Shared by the delivery poller (which dispatches on
+# scripts/pr-state.sh emits. Shared by the delivery poller (which dispatches on
 # `action`) and the responder agent (which reports the counts back).
 #
 # Author identity is deliberately never used to tell agent activity from human

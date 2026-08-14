@@ -24,7 +24,8 @@ gh issue comment "$issue" --repo "$repo" --body "$(cat <<EOF
 🤖 Started implementing this issue.
 
 Run \`$run_id\` is working on it now, on branch \`$branch\`. It runs as a
-sequence of phases — explore, propose, code, verify, review, sync, deliver — each
+sequence of phases — explore, propose, code, verify, review, resolve, sync,
+deliver — each
 visible separately in the run view, so progress is observable while it works.
 
 A pull request or a report will be posted here when it finishes. No action needed

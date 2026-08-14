@@ -11,9 +11,14 @@ make test-ci
 cd sweatcharge_fe && yarn lint && yarn test:unit && yarn build   # if the frontend changed
 ```
 
-They will be run again, unchanged, immediately after you finish. You do not need
-to run the full suite yourself — run the focused check for whatever you are
-fixing, and let the shell step be the verdict.
+They will be run again, unchanged, immediately after you finish, and you will be
+called again if they still fail. You do not need to run the full suite yourself —
+run the focused check for whatever you are fixing, and let the shell step be the
+verdict.
+
+If `{{RUN_DIR}}/verify.*-*.log` files exist, they are earlier attempts in this
+same loop. Read the most recent one before starting: something has already been
+tried and did not work, and repeating it wastes the remaining attempts.
 
 ## How to fix
 
