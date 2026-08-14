@@ -1,0 +1,27 @@
+FROM ghcr.io/dagucloud/dagu:latest AS dagu
+
+FROM node:22-bookworm-slim
+
+ARG CODEX_VERSION=0.147.0
+ARG CLAUDE_CODE_VERSION=2.1.232
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        ca-certificates \
+        docker.io \
+        gh \
+        git \
+        jq \
+        make \
+        openssh-client \
+        tini \
+    && rm -rf /var/lib/apt/lists/* \
+    && npm install --global \
+        "@openai/codex@${CODEX_VERSION}" \
+        "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}"
+
+COPY --from=dagu /usr/local/bin/dagu /usr/local/bin/dagu
+COPY worker-entrypoint.sh /usr/local/bin/worker-entrypoint
+RUN chmod +x /usr/local/bin/worker-entrypoint
+
+ENTRYPOINT ["/usr/bin/tini", "-g", "--", "/usr/local/bin/worker-entrypoint"]

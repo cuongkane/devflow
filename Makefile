@@ -5,8 +5,6 @@
 # Host-side dagu CLI reads this project rather than ~/.config/dagu.
 export DAGU_HOME := $(CURDIR)
 
-COORDINATOR := 127.0.0.1:50055
-
 include project.env
 
 REPO      ?= $(PROJECT_REPO)
@@ -21,9 +19,9 @@ help: ## Show this help
 
 ## -- Dagu in Docker (scheduler + web UI + coordinator) --
 
-up: ## Start dagu
-	docker compose up -d
-	@echo "Web UI: http://localhost:8525    Now run 'make worker' in another pane."
+up: ## Start dagu and its worker
+	@GH_TOKEN="$$(gh auth token)" docker compose up -d --build
+	@echo "Web UI: http://localhost:8525"
 
 down: ## Stop dagu
 	docker compose down
@@ -40,11 +38,10 @@ ps: ## Show container status
 open: ## Open the web UI
 	open http://localhost:8525
 
-## -- Host worker (runs every step) --
+## -- Worker --
 
-worker: ## Run the host worker in the FOREGROUND; keep this pane open
-	@echo "Host worker -> $(COORDINATOR). Ctrl-C to stop."
-	dagu worker --worker.coordinators=$(COORDINATOR) --worker.labels host=true
+worker: ## Follow worker logs
+	docker compose logs -f worker
 
 ## -- Authoring and inspection --
 
@@ -54,7 +51,7 @@ validate: ## Validate every DAG definition
 
 health: ## Prove the host worker is reachable, tooled and logged in
 	@docker compose exec -T dagu dagu enqueue check-health
-	@echo "Enqueued. Watch the 'make worker' pane, or http://localhost:8525"
+	@echo "Enqueued. Run 'make worker' to follow logs, or open http://localhost:8525"
 
 state: ## Show every open issue, grouped by its agent:* state
 	@for s in $(STATES); do \

@@ -15,15 +15,15 @@ The coding-agent CLI is selected once in `agent.yaml`:
 agent: codex
 ```
 
-Change it to `agent: claude` to switch every AI-backed stage. Restart the host
-worker after changing it. Both values require the corresponding CLI to be
-installed and logged in on the host.
+Change it to `agent: claude` to switch every AI-backed stage, then restart the
+worker. Both CLIs are installed in the worker image and use the host credentials
+mounted by Compose.
 
 ## Start it
 
 ```bash
-make up        # dagu scheduler + web UI + coordinator, in Docker
-make worker    # host worker — FOREGROUND, keep this pane open (tmux)
+make up        # build and start dagu + worker in Docker
+make worker    # optionally follow the worker logs
 make health    # prove the worker is reachable, tooled and logged in
 make labels    # create the agent:* labels on the repo
 make state     # see where every open issue currently sits
@@ -31,9 +31,8 @@ make state     # see where every open issue currently sits
 
 Web UI: <http://localhost:8525>
 
-Both processes are required. The container holds the schedule and history; the
-worker does all the work. With the container alone, the schedule fires and
-nothing happens.
+Both services are required, and `make up` starts both. The `dagu` service holds
+the schedule and history; the `worker` service does all the work.
 
 ## The state machine
 
@@ -114,25 +113,39 @@ comment is newer than the marker. Without that, a thread the responder replied t
 but deliberately left unresolved — because it disagreed — would re-trigger the
 responder every ten minutes forever.
 
-## Why two processes
+## Why two services
 
-The dagu container carries no tooling on purpose. The selected coding-agent CLI
-runs on the macOS host so it can use the host login and local repositories.
+The coordinator and worker remain separate processes, but Compose now manages
+both. The worker image carries the coding-agent CLIs and development tools. It
+uses explicit mounts for the target repository, Docker socket, Git identity,
+SSH keys, GitHub CLI auth, coding-agent auth/skills, and the target repository's
+worktree directory.
 
 ```
-┌─ Docker ──────────────────┐          ┌─ macOS host (login session) ─┐
+┌─ dagu service ────────────┐          ┌─ worker service ─────────────┐
 │ dagu start-all            │          │ dagu worker                  │
 │  • scheduler (cron)       │◀─ gRPC ──│  --worker.labels host=true   │
-│  • web UI      :8525      │  :50055  │                              │
-│  • coordinator :50055     │          │  codex/claude, gh, git, jq, │
-│                           │          │  make, docker, repositories  │
+│  • web UI      :8525      │          │  codex/claude, gh, git, jq, │
+│  • coordinator :50055     │          │  make, docker, repositories  │
 └───────────────────────────┘          └──────────────────────────────┘
 ```
 
 All three task DAGs set `worker_selector: {host: "true"}`, at DAG level, so
-every step runs on the worker. Workers need no DAGs directory and no shared
-volume — the coordinator ships task definitions over gRPC and the worker streams
-logs back.
+every step runs on the worker. The coordinator ships task definitions over gRPC
+and the worker streams logs back. The project mount exists for scripts, prompts,
+and configuration referenced by absolute path within those definitions.
+
+### Credential mounts
+
+Compose forwards the existing host login rather than copying secrets into the
+image. `make up` reads the GitHub token from the macOS Keychain through
+`gh auth token` and injects it into the worker runtime; Codex and Claude use
+their mounted credential files. At startup the worker writes the token into its
+own Linux-local GitHub CLI configuration because Dagu steps do not inherit every
+worker environment variable. Agent configuration, skills, Git config, and SSH
+keys are read-only. Anyone able to control a workflow can still execute commands
+with those credentials, so keep the web UI bound to localhost and treat the
+worker as trusted local infrastructure.
 
 ## Files
 
@@ -198,15 +211,16 @@ decides whether to respond or finish it.
 
 1. `make state` — where is the issue, and is it labelled at all?
 2. `make health` — fails on the exact broken step.
-3. Is `make worker` still running? It does not survive a reboot or a closed pane.
+3. Is the worker healthy in `docker compose ps` and `make worker`?
 4. `make logs`, or the run history at <http://localhost:8525>.
 
 An issue with no `agent:*` label is invisible to every poller. Only the
 agent-feature issue template applies `agent:todo`, so a blank issue or a plain
 `gh issue create` lands unlabelled — the clarify poller logs a hint listing them.
 
-`agent_auth` failing means the selected CLI is not logged in from the worker's
-login session. Authenticate that CLI there, then run `make health` again.
+`agent_auth` failing means the selected CLI's mounted host credential is missing
+or expired. Authenticate the CLI on the host, run `make up` to recreate the
+worker with the current credentials, then run `make health` again.
 
 ## Unsticking a killed run
 

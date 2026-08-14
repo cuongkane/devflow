@@ -1,10 +1,8 @@
-# Dagu: scheduler + web UI + coordinator.
+# Dagu: scheduler + web UI + coordinator + execution worker.
 #
-# This container is the "brain" only: it holds the schedule, the web UI, and run
-# history. It deliberately carries no tooling. Every step is dispatched over gRPC
-# to the native host worker (`make worker`), which has the configured coding
-# agent plus gh, git, jq, make,
-# docker and your repositories.
+# The worker has the coding agents and development tools. It receives host auth
+# through narrowly-scoped mounts, and mounts the project paths at their original
+# absolute locations because the DAG definitions use those paths.
 #
 # See README.md for why, and docs.dagu.sh/configurations/deployment/docker-compose
 # for the upstream reference this is based on.
@@ -16,8 +14,8 @@ services:
     hostname: dagu
 
     ports:
-      - "8525:8080"     # web UI
-      - "50055:50055"   # coordinator gRPC — the host worker dials this
+      - "127.0.0.1:8525:8080"     # web UI
+      - "127.0.0.1:50055:50055"   # optional host CLI access
 
     entrypoint: ["/usr/local/bin/tini", "-g", "--"]
     command:
@@ -25,11 +23,9 @@ services:
       - start-all
       - --config=/var/lib/dagu/service.yaml
       # Bind the coordinator to all interfaces so it is reachable through the
-      # published port. Without --coordinator.advertise the coordinator registers
-      # its container hostname, which the host worker cannot resolve, and the
-      # worker silently never connects.
+      # published port. Advertise the Compose DNS name used by the worker.
       - --coordinator.host=0.0.0.0
-      - --coordinator.advertise=127.0.0.1
+      - --coordinator.advertise=dagu
 
     environment:
       - DAGU_HOME=/var/lib/dagu
@@ -49,4 +45,51 @@ services:
     # Docker-in-Docker, but nothing executes inside this container here.
 
     user: "0:0"
+    restart: unless-stopped
+
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    hostname: dagu-worker
+    depends_on:
+      - dagu
+    command:
+      - dagu
+      - worker
+      - --worker.coordinators=dagu:50055
+      - --worker.labels
+      - host=true
+    environment:
+      HOME: /root
+      CODEX_HOME: /root/.codex
+      # macOS gh keeps the active token in Keychain, which is not available in
+      # Linux. The worker entrypoint converts this into its own gh config file.
+      GH_TOKEN: ${GH_TOKEN:-}
+      DAGU_HOME: /var/lib/dagu
+      DAGU_TZ: Asia/Ho_Chi_Minh
+    volumes:
+      # Project files. Keep the host paths unchanged inside the worker because
+      # the DAGs and Docker-backed test commands refer to these absolute paths.
+      - /Users/lexuancuong/CUONG/DAGU:/Users/lexuancuong/CUONG/DAGU
+      - /Users/lexuancuong/CUONG/SWC:/Users/lexuancuong/CUONG/SWC
+      - /Users/lexuancuong/CUONG/SWC-worktrees:/Users/lexuancuong/CUONG/SWC-worktrees
+      - /tmp/dagu-agent:/tmp/dagu-agent
+
+      # Authentication and agent extensions. Credential files are writable so
+      # their CLIs can refresh tokens; configuration and skills are read-only.
+      - ${HOME}/.codex/auth.json:/root/.codex/auth.json
+      - ${HOME}/.codex/config.toml:/root/.codex/config.toml:ro
+      - ${HOME}/.codex/skills:/root/.codex/skills:ro
+      - ${HOME}/.codex/plugins:/root/.codex/plugins:ro
+      # The configured SweatCharge skills are symlinks into this repository.
+      - /Users/lexuancuong/PP/dotfiles:/Users/lexuancuong/PP/dotfiles:ro
+      - ${HOME}/.claude/.credentials.json:/root/.claude/.credentials.json
+      - ${HOME}/.claude/settings.json:/root/.claude/settings.json:ro
+      - ${HOME}/.claude/plugins:/root/.claude/plugins:ro
+      - ${HOME}/.gitconfig:/root/.gitconfig:ro
+      - ${HOME}/.ssh:/root/.ssh:ro
+
+      # The implementation agent runs the target repository's Docker test stack.
+      - /var/run/docker.sock:/var/run/docker.sock
     restart: unless-stopped
