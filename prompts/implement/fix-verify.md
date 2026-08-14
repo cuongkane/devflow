@@ -23,7 +23,8 @@ tried and did not work, and repeating it wastes the remaining attempts.
 ## How to fix
 
 Read the log first and find the actual first failure; later failures are often
-consequences of it. Then fix the **cause**.
+consequences of it. Then fix the **cause**, to the engineering practices and
+testing standards appended at the end of this prompt.
 
 Do not weaken a test, delete an assertion, add a skip, loosen a type, or widen an
 exception to make a check pass. If a test is genuinely wrong — it asserts

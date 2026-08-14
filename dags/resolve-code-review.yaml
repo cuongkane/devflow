@@ -149,6 +149,12 @@ steps:
       printf 'branch:      %s\n' "$head_ref"
       printf 'feedback:    %s threads, %s reviews, %s comments\n' "$unresolved" "$new_reviews" "$new_comments"
 
+      # The prompt is the phase instructions plus the standards this repository
+      # owns. The skill is still named for its review-thread workflow, but its
+      # engineering and testing standards no longer have to be fetched: reading a
+      # SKILL.md and two cross-skill reference files to obtain two pages of
+      # unchanging text cost several thousand tokens on every single run.
+      {
       sed -e "s|{{SKILL}}|${env.REVIEW_SKILL}|g" \
           -e "s|{{REPO}}|${env.PROJECT_REPO}|g" \
           -e "s|{{WORKSPACE}}|${env.PROJECT_WORKSPACE}|g" \
@@ -158,7 +164,9 @@ steps:
           -e "s|{{FEEDBACK_PATH}}|$RUN_DIR/feedback.md|g" \
           -e "s|{{REPORT_PATH}}|$RUN_DIR/report.md|g" \
           -e "s|{{RESULT_PATH}}|$RUN_DIR/result.json|g" \
-          "${consts.prompts_dir}/respond-review.md" > "$RUN_DIR/prompt.md"
+          "${consts.prompts_dir}/respond-review.md"
+      ${consts.scripts_dir}/standards.sh engineering-practices testing-standards
+      } > "$RUN_DIR/prompt.md"
 
       ${consts.agent_runner} "$RUN_DIR/prompt.md" ${consts.budget_usd} "$RUN_DIR/agent-stream.jsonl" || true
 

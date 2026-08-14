@@ -12,7 +12,9 @@ git -C {{WORKTREE}} diff {{BASE}}...HEAD
 Use the repository's own code-review skill or `/code-review`, run from inside the
 worktree. Review against `{{RUN_DIR}}/explore.md`, the brief, and the OpenSpec
 scenarios for `{{CHANGE}}` — correctness is correctness *against the requirement*,
-not merely internal consistency.
+not merely internal consistency. The engineering practices and testing standards
+appended at the end of this prompt are the bar the diff is measured against; a
+violation of either is a finding.
 
 ## What to look for
 

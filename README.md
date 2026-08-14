@@ -175,9 +175,13 @@ prompts/clarify-issue.md                 the headless prompts, each with its own
 prompts/respond-review.md                result.json exit contract
 prompts/implement/_preamble.md           shared by every implementation phase
 prompts/implement/{explore,propose,      one per phase of the implementation
-  code,fix-verify,review,
+  code,tests,fix-verify,review,
   resolve-review,sync,pr-body}.md
+prompts/standards/                       the engineering practices and testing
+  engineering-practices.md               standards, owned here and pasted into
+  testing-standards.md                   the prompts of the phases held to them
 
+scripts/standards.sh                     print the standards appendix for a prompt
 scripts/relabel.sh                       guarded claim: swap FROM -> TO
 scripts/set-state.sh                     unguarded report: force exactly one state
 scripts/pick-oldest.sh                   read a queue label, pick the oldest issue
@@ -240,6 +244,17 @@ It is now the skill's own phases, one step each:
 The steps are one line each because their bodies live in `scripts/implement/` and
 their prompts in `prompts/implement/`. This DAG only says what order things
 happen in; changing what a phase *does* means editing a script or a prompt.
+
+**The standards live here, not in a skill.** `prompts/standards/` holds the
+engineering practices and testing standards, and `scripts/standards.sh` pastes
+them onto the end of the prompts of the phases they govern: practices for `code`,
+testing standards for `tests`, both for `review`, `resolve-review`, `fix-verify`
+and the review-response agent. Every phase used to be told to "read the skill and
+hold its standards", so each one spent a `SKILL.md`, four reference files and half
+a dozen tool calls per run to obtain two pages of text that never change — and
+the review responder reached across two skills to get the same two files. A phase
+now starts already holding them. The coding-agent skills are still named where
+their *workflow* is what is wanted; they are no longer read for standards.
 
 **Phases hand off through files, not through a session.** Each is a separate
 one-shot agent process with no memory of the last one. Everything durable is on

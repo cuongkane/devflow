@@ -17,7 +17,8 @@ summary, not by editing correct code to match it.
 ## How to resolve
 
 - Fix every `critical` and `important` finding, and add the test that would have
-  caught each defect you fix.
+  caught each defect you fix. Your fixes and their tests are held to the
+  engineering practices and testing standards appended at the end of this prompt.
 - Leave `minor` findings alone unless the fix is free and obviously safe. Growing
   the diff for a nit costs more than the nit does.
 - If a finding is wrong, or is out of scope for this issue, state which one and

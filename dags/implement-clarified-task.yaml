@@ -127,21 +127,42 @@ steps:
       "${env.PROJECT_REPO}" "${env.PROJECT_WORKSPACE}" "${env.IMPLEMENT_SKILL}"
       standard 2
 
-  # The long one: 30-60 minutes of the run, and the only phase that writes
-  # application code. It is not faster for having been split out -- it is
-  # attributable, which is what was missing.
-  - id: write_code_and_tests
+  # The long one, now two steps: writing the implementation and writing its tests
+  # are separate phases. They were one, which meant a phase that ran out of budget
+  # or timed out left an unknowable mixture of the two, and the run view could not
+  # say whether the code existed but was untested or neither existed. Splitting
+  # them also stops the tests being written by the same pass that is trying to get
+  # the feature working -- the tests phase starts from the diff, with the testing
+  # standards loaded, and is allowed to reject the implementation.
+  - id: write_implementation_code
     depends: write_openspec_proposal
     preconditions: *claimed
     working_dir: ${env.PROJECT_WORKSPACE}
-    timeout_sec: 4500
+    timeout_sec: 3600
     retry_policy: *no_retry
     continue_on: *carry_on
     run: >
       ${consts.impl}/run-phase.sh code
       "${consts.run_dir_root}/${claim_ready_issue.output.issue_number}/implement"
       "${env.PROJECT_REPO}" "${env.PROJECT_WORKSPACE}" "${env.IMPLEMENT_SKILL}"
-      deep 7
+      deep 5
+
+  # The agent loops on its own focused tests here until they pass, fixing the
+  # implementation when a test is right and the code is wrong. It is deliberately
+  # not a shell loop: the focused tests differ per task and the authoritative,
+  # shell-run verdict is the very next step, which loops with its own fix phase.
+  - id: write_tests_until_passing
+    depends: write_implementation_code
+    preconditions: *claimed
+    working_dir: ${env.PROJECT_WORKSPACE}
+    timeout_sec: 3600
+    retry_policy: *no_retry
+    continue_on: *carry_on
+    run: >
+      ${consts.impl}/run-phase.sh tests
+      "${consts.run_dir_root}/${claim_ready_issue.output.issue_number}/implement"
+      "${env.PROJECT_REPO}" "${env.PROJECT_WORKSPACE}" "${env.IMPLEMENT_SKILL}"
+      deep 4
 
   # -------------------------------------------------------- verification ----
   # One step, not three. The target repository's own commands run from shell and
@@ -150,7 +171,7 @@ steps:
   # run/fix/rerun chain gated on preconditions -- which put a hard ceiling of one
   # fix on the graph, and spent three lines of the run view saying so.
   - id: verify_until_green
-    depends: write_code_and_tests
+    depends: write_tests_until_passing
     preconditions: *claimed
     timeout_sec: 7200          # the whole loop, not one pass of the suite
     retry_policy: *no_retry
