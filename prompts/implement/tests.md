@@ -4,11 +4,15 @@ The previous phase implemented `{{CHANGE}}` and wrote no tests. Write them, run
 them, and do not finish until they pass.
 
 Read `{{RUN_DIR}}/code/result.json` for what the implementation phase says it
-built, then the change's `tasks.md` and delta specs, then the actual diff:
+built, then the change's `tasks.md` and delta specs, then the actual diff —
+already written out for you, current as of the moment this phase started:
 
 ```
-git -C {{WORKTREE}} diff {{BASE}}...HEAD
+{{DIFF_STAT_PATH}}   what changed, by file
+{{DIFF_PATH}}        the diff itself
 ```
+
+Do not run `git diff` yourself; that is the same content a second time.
 
 The testing standards at the end of this prompt govern how every test here is
 written; hold them for the whole phase. Where they and this prompt disagree about

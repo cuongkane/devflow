@@ -21,6 +21,17 @@
 # The exit status is the verdict. `verify.log` holds the output for the agent
 # that gets called to fix a failure, since the DAG's own step log is not a file
 # it can read.
+#
+# It holds it in three sizes. The full log for issue #116 was 324 KB -- roughly
+# 80k tokens, entering the fix agent's context on its first command and re-sent
+# on every request afterwards, up to five times across the DAG. Almost none of it
+# is the failure: it is a passing Django suite, a Vite build manifest and 236
+# copies of one Angular warning. So a summary and a tail are written alongside
+# it, and the fix prompt names those first:
+#
+#   verify.summary.log   rtk's deduplicated errors and warnings (~1.5 KB)
+#   verify.tail.log      the last 400 lines, raw (~30 KB)
+#   verify.log           everything, for when the tail genuinely is not enough
 set -eu
 
 run_dir=$1
@@ -83,10 +94,27 @@ else
   echo "frontend:                unchanged -- skipping lint, unit tests and build"
 fi
 
+# The digests are written whether the suite passed or failed: `pr-body` reads the
+# verification output of a *passing* run to describe what was checked, and it
+# should not have to open 324 KB to do it either.
+tail -n 400 "$log" > "$run_dir/$label.tail.log"
+if command -v rtk >/dev/null 2>&1; then
+  rtk log "$log" > "$run_dir/$label.summary.log" 2>/dev/null || \
+    tail -n 40 "$log" > "$run_dir/$label.summary.log"
+else
+  tail -n 40 "$log" > "$run_dir/$label.summary.log"
+fi
+
+printf 'log:      %s (%s bytes)\n' "$log" "$(wc -c < "$log" | tr -d ' ')"
+printf 'tail:     %s (%s bytes)\n' \
+  "$run_dir/$label.tail.log" "$(wc -c < "$run_dir/$label.tail.log" | tr -d ' ')"
+printf 'summary:  %s (%s bytes)\n' \
+  "$run_dir/$label.summary.log" "$(wc -c < "$run_dir/$label.summary.log" | tr -d ' ')"
+
 if [ "$failed" -ne 0 ]; then
   echo
   echo "[$label] verification failed; see $log" >&2
-  tail -40 "$log" >&2
+  cat "$run_dir/$label.summary.log" >&2
   exit 1
 fi
 

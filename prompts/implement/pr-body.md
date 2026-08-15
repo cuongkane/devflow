@@ -1,16 +1,20 @@
 ## Phase: write the pull request description and the issue report
 
-Everything is built, verified, reviewed, synced and archived. Nothing is pushed
-yet. Your job is the prose that a human reads before any of it — and nothing else.
+Everything is built, reviewed, synced, archived and verified — in that order, so
+the suite that passed ran against exactly the tree that is about to be pushed.
+Nothing is pushed yet. Your job is the prose that a human reads before any of it — and nothing else.
 
 Read the diff and the artifacts before writing a word:
 
-```bash
-git -C {{WORKTREE}} diff {{BASE}}...HEAD --stat
-git -C {{WORKTREE}} log --oneline {{BASE}}..HEAD
+```
+{{DIFF_STAT_PATH}}          what changed, by file
+{{DIFF_PATH}}               the diff itself, if the stat is not enough
+{{BRIEF_PATH}}              what was asked for
+{{RUN_DIR}}/explore.md      the findings the change was designed from
+{{VERIFY_SUMMARY_PATH}}     the verification result
 ```
 
-plus `{{BRIEF_PATH}}`, `{{RUN_DIR}}/explore.md`, `{{RUN_DIR}}/verify.log`, and the
+plus `rtk git log --oneline {{BASE}}..HEAD` from inside `{{WORKTREE}}`, and the
 archived `{{CHANGE}}` artifacts. Describe what the diff actually contains. Do not
 describe what the plan said it would contain.
 
@@ -26,7 +30,7 @@ The pull request body. It must include:
 - **Implementation notes** — backend and frontend, and the contract between them
   when the change crosses it.
 - **Verification** — the commands that ran and their results. Take these from
-  `{{RUN_DIR}}/verify.log`; do not claim a check that is not in it, and do not
+  `{{VERIFY_SUMMARY_PATH}}`; do not claim a check that is not in it, and do not
   claim a coverage percentage no tool measured.
 - **Risk** — migrations, compatibility, rollout, and anything left untested with
   the reason and the residual risk.

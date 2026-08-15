@@ -111,6 +111,18 @@ if [ "$outcome" = failed ]; then
   } > "$body"
 fi
 
+# The accounting table, collapsed, on every outcome. A failed run is exactly when
+# someone wants to know how much it spent before dying, and a completed one is
+# how the cost of a change gets noticed at all. It is folded away because it is
+# reference material, not the message.
+if [ -s "$run_dir/usage.md" ]; then
+  {
+    printf '\n<details>\n<summary>Run accounting</summary>\n\n'
+    cat "$run_dir/usage.md"
+    printf '\n</details>\n'
+  } >> "$body"
+fi
+
 gh issue comment "$issue" --repo "$repo" --body-file "$body"
 "$scripts_dir/set-state.sh" "$repo" "$issue" "$state"
 

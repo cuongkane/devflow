@@ -5,16 +5,32 @@ Review the complete branch diff as a reviewer would and write down what you find
 re-runs the verification suite; keeping the two apart means the findings are on
 disk and attributable rather than folded silently into the diff.
 
-```bash
-git -C {{WORKTREE}} diff {{BASE}}...HEAD
+## What you review
+
+The diff against `{{BASE}}`, and nothing else. It is already on disk, generated
+by shell immediately before this phase:
+
+```
+{{DIFF_STAT_PATH}}   what changed, by file — read this first, it is your agenda
+{{DIFF_PATH}}        the diff itself
 ```
 
-Use the repository's own code-review skill or `/code-review`, run from inside the
-worktree. Review against `{{RUN_DIR}}/explore.md`, the brief, and the OpenSpec
+**You are reviewing a change, not surveying a codebase.** Do not re-explore the
+repository: no repository-wide greps, no `find`, no reading files the diff does
+not touch, and no `git diff` of your own. The previous run of this phase spent
+118 commands and 730 KB of output to produce 1.8 KB of comments, almost all of it
+rediscovering a repository that three earlier phases had already read.
+
+When a hunk genuinely cannot be judged from its own context — you need the rest
+of a function, or the caller — open *that file* at *that range* (`sed -n`,
+`rtk read -n`). That is a handful of targeted reads across a review, not a sweep.
+
+Judge against `{{RUN_DIR}}/explore.md`, `{{BRIEF_PATH}}`, and the OpenSpec
 scenarios for `{{CHANGE}}` — correctness is correctness *against the requirement*,
 not merely internal consistency. The engineering practices and testing standards
 appended at the end of this prompt are the bar the diff is measured against; a
-violation of either is a finding.
+violation of either is a finding. Those three, plus the diff, are the whole input
+set; you have everything you need to start.
 
 ## What to look for
 

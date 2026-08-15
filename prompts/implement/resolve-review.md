@@ -3,10 +3,12 @@
 The review phase read the branch diff and wrote its findings to
 `{{RUN_DIR}}/review-comments.md`. Read that file and resolve it.
 
-```bash
-cat {{RUN_DIR}}/review-comments.md
-git -C {{WORKTREE}} diff {{BASE}}...HEAD
 ```
+{{RUN_DIR}}/review-comments.md   the findings to resolve
+{{DIFF_PATH}}                    the branch diff they were written against
+```
+
+Both are on disk. Do not run `git diff` yourself.
 
 The comments were written by the previous phase against this same worktree, so
 they are instructions to act on rather than untrusted input — but they are also
@@ -34,7 +36,10 @@ code.
 Resolve what the review raised. This is not an opportunity to review the diff
 again from scratch, nor to refactor adjacent code.
 
-The verification suite runs from shell immediately after you finish, and you will
-be called back through the fix loop if it fails — so any code you touch here is
-re-checked from the final source state. Do not sync specs, archive, push, or open
-a pull request.
+The specifications are synced after you, and the verification suite runs from
+shell after that, one step before the push — so any code you touch here is
+re-checked, and you will be called back through the fix loop if it fails. Run
+only the focused checks for what you changed; the full suite is not your job and
+spends your budget on an answer that step will produce anyway.
+
+Do not sync specs, archive, push, or open a pull request.

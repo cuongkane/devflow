@@ -80,6 +80,11 @@ printf 'worktree: %s-worktrees/%s\n' "$workspace" "$name"
 printf 'change:   %s\n' "$slug"
 printf 'base:     %s\n' "$base"
 
+# The repository's own agent instructions, collected once for the whole run.
+# Every phase used to find and read these four files for itself.
+here=$(cd "$(dirname "$0")" && pwd)
+"$here/write-conventions.sh" "$workspace" "$run_dir"
+
 # The clarifier's refined brief supersedes the raw issue body: it has already
 # resolved the ambiguities and folded in the human's answers, and this pipeline
 # is not allowed to ask anything. Fall back to the body only when the issue

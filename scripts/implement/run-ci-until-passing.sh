@@ -47,7 +47,12 @@ while :; do
     exit 0
   fi
 
-  cp "$run_dir/verify.log" "$run_dir/verify.$stage-$attempt.log" 2>/dev/null || true
+  # Keep the *summary* of each failed attempt, not the whole 300 KB log. The next
+  # fix agent is told to read the earlier attempts so it does not retry what has
+  # already failed, and for that it needs to know what failed, not every line the
+  # suite printed while failing.
+  cp "$run_dir/verify.summary.log" \
+     "$run_dir/verify.$stage-$attempt.summary.log" 2>/dev/null || true
 
   if [ "$attempt" -ge "$attempts" ]; then
     echo "[$stage] still failing after $attempts attempts; giving up" >&2
@@ -63,12 +68,22 @@ while :; do
   "$here/run-phase.sh" fix-verify "$run_dir" "$repo" "$workspace" "$skill" \
     "$tier" "$budget" || status=$?
 
-  # Keep the attempt's own result and prompt: the next attempt overwrites both,
-  # and a run that ends up failing is usually diagnosed from the earlier ones.
-  if [ -f "$run_dir/fix-verify/result.json" ]; then
-    cp "$run_dir/fix-verify/result.json" \
-       "$run_dir/fix-verify/result.$stage-$attempt.json"
-  fi
+  # Keep the whole attempt: the next one overwrites every file in the phase
+  # directory, and a run that ends up failing is usually diagnosed from the
+  # earlier ones. The agent stream is also what summarize-run.sh counts tokens
+  # from, so an unpreserved attempt is one that cost money and does not appear in
+  # the report.
+  #
+  # A directory per attempt rather than a suffix per file. Renaming each file
+  # meant deciding where the suffix went relative to the extension, and left the
+  # attempt's `result.json` under a name nothing looked for -- so the accounting
+  # showed every attempt row with the *last* attempt's status. A directory needs
+  # no naming rule and reads with exactly the same paths as any other phase.
+  archive="$run_dir/fix-verify/$stage-$attempt"
+  mkdir -p "$archive"
+  for f in result.json agent-stream.jsonl started_at ended_at plan prompt.md; do
+    [ -f "$run_dir/fix-verify/$f" ] && cp "$run_dir/fix-verify/$f" "$archive/" || true
+  done
 
   case "$status" in
     0) ;;

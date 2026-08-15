@@ -10,8 +10,9 @@ Start from OpenSpec — `openspec list --specs`, `openspec list`, `openspec show
 you read any code. Then read the affected code, its tests, the Feature RFCs, and
 enough git history to know what the product does today.
 
-Read the root `CLAUDE.md` and the instructions for every component the brief
-plausibly touches. Repository-local instructions override anything generic.
+Read `{{CONVENTIONS_PATH}}` — it already holds every `CLAUDE.md` and `AGENTS.md`
+in this repository, concatenated. Repository-local instructions override anything
+generic. Do not go and read those files individually; this is the same content.
 
 ## What to write
 

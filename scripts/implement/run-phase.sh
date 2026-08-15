@@ -25,10 +25,20 @@ project_dir=$(cd "$here/../.." && pwd)
 
 "$here/build-prompt.sh" "$phase" "$run_dir" "$repo" "$workspace" "$skill"
 
+# Wall clock around the agent alone, not around prompt assembly or the exit
+# check. summarize-run.sh reads these two files to report how long each phase
+# actually spent with a model, which is the number worth putting next to that
+# phase's token count. A phase that is killed leaves `started_at` without
+# `ended_at`, and the report says so rather than showing a blank.
+date +%s > "$run_dir/$phase/started_at"
+
 "$project_dir/run-agent.sh" \
   "$run_dir/$phase/prompt.md" \
   "$budget" \
   "$run_dir/$phase/agent-stream.jsonl" \
   "$tier" || echo "[$phase] agent exited non-zero; judging it by its result.json" >&2
+
+date +%s > "$run_dir/$phase/ended_at"
+printf 'tier:     %s\nbudget:   $%s\n' "$tier" "$budget" > "$run_dir/$phase/plan"
 
 "$here/check-phase-result.sh" "$run_dir" "$phase"

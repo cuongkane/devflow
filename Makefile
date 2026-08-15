@@ -1,6 +1,7 @@
 .DEFAULT_GOAL := help
 .PHONY: help up down restart logs ps open worker validate health state \
-        clarify implement phase verify respond close labels labels-prune clean
+        clarify implement phase verify usage respond close labels labels-prune \
+        clean
 
 # Host-side dagu CLI reads this project rather than ~/.config/dagu.
 export DAGU_HOME := $(CURDIR)
@@ -96,6 +97,12 @@ verify: ## Verify one issue, fixing until green: make verify ISSUE=42 [ATTEMPTS=
 	scripts/implement/run-ci-until-passing.sh /tmp/dagu-agent/$(ISSUE)/implement \
 		"$(PROJECT_REPO)" "$(PROJECT_WORKSPACE)" "$(IMPLEMENT_SKILL)" \
 		"$(or $(ATTEMPTS),3)" standard 2 manual
+
+usage: ## What a run spent, phase by phase: make usage ISSUE=42
+	@test -n "$(ISSUE)" || { echo "usage: make usage ISSUE=<number>"; exit 1; }
+	@test -f /tmp/dagu-agent/$(ISSUE)/implement/state.json \
+		|| { echo "no run directory for issue $(ISSUE)"; exit 1; }
+	@scripts/implement/summarize-run.sh /tmp/dagu-agent/$(ISSUE)/implement
 
 respond: ## Resolve the current review state now: make respond ISSUE=42
 	@test -n "$(ISSUE)" || { echo "usage: make respond ISSUE=<number>"; exit 1; }

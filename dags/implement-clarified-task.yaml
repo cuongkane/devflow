@@ -175,8 +175,12 @@ steps:
   # agent is handed a concrete failure to react to rather than an open problem to
   # solve, and the shell suite re-runs after every attempt, so a bad fix is
   # caught mechanically rather than shipped. It is also the phase that runs most
-  # often -- up to twice here and once more after the review -- which makes it
-  # the most expensive tier in the DAG to leave at deep.
+  # often -- up to twice here and once more in `run_ci_before_ship` -- which
+  # makes it the most expensive tier in the DAG to leave at deep.
+  #
+  # This run is the early gate: it exists so the review reads a diff that already
+  # compiles and passes, rather than spending a deep model on code the suite was
+  # going to reject anyway. The authoritative run is `run_ci_before_ship`.
   - id: run_ci_until_passing
     depends: write_tests_until_passing
     preconditions: *claimed
@@ -208,24 +212,26 @@ steps:
       "${env.PROJECT_REPO}" "${env.PROJECT_WORKSPACE}" "${env.IMPLEMENT_SKILL}"
       deep 3
 
-  # Resolve the comments, then verify -- one step, because the two are not
-  # independent. The fixes made here are unreviewed code, the skill requires the
-  # frontend production build to come from the *final* source state, and a review
-  # fix that broke something should get fixed rather than end the run red one step
-  # from the pull request. A review that found nothing skips the agent and costs
-  # one clean pass of the suite.
+  # Resolve the comments the review wrote, and nothing else. This step used to run
+  # the verification suite afterwards, on the grounds that its own fixes were
+  # unreviewed code and the frontend production build has to come from the final
+  # source state. The second half of that was wrong: the spec sync below commits
+  # further changes, so the build this step took was not final, only nearly so.
+  # Verification now happens after the sync, one step before the push.
+  #
+  # A review that found nothing skips the agent entirely and costs nothing.
   - id: resolve_review_comment
     depends: review_code
     working_dir: ${env.PROJECT_WORKSPACE}
     preconditions: *claimed
-    timeout_sec: 7200
+    timeout_sec: 3600
     retry_policy: *no_retry
     continue_on: *carry_on
     run: >
       ${consts.impl}/resolve-review-comments.sh
       "${consts.run_dir_root}/${claim_ready_issue.output.issue_number}/implement"
       "${env.PROJECT_REPO}" "${env.PROJECT_WORKSPACE}" "${env.IMPLEMENT_SKILL}"
-      deep 3 2
+      deep 3
 
   # ------------------------------------------------ specifications, then PR ----
   # Syncing and archiving are one step: syncing without archiving leaves the
@@ -247,11 +253,30 @@ steps:
       "${env.PROJECT_REPO}" "${env.PROJECT_WORKSPACE}" "${env.IMPLEMENT_SKILL}"
       fast 1
 
+  # The last thing to run before anything leaves this machine, and the reason it
+  # is here rather than three steps earlier: every commit the branch will ever
+  # have now exists. The review's fixes are in, the synced specs are in, the
+  # change is archived. This is the only point in the graph where "the suite
+  # passed on the final source state" is literally true -- which is what the
+  # frontend production build requirement actually asks for, and what the pull
+  # request will claim.
+  - id: run_ci_before_ship
+    depends: finalize_openspec_change
+    preconditions: *claimed
+    timeout_sec: 7200          # the whole loop, not one pass of the suite
+    retry_policy: *no_retry
+    continue_on: *carry_on
+    run: >
+      ${consts.impl}/run-ci-until-passing.sh
+      "${consts.run_dir_root}/${claim_ready_issue.output.issue_number}/implement"
+      "${env.PROJECT_REPO}" "${env.PROJECT_WORKSPACE}" "${env.IMPLEMENT_SKILL}"
+      2 standard 2 final
+
   # Likewise one step: the description exists only to be the body of the pull
   # request opened straight after it. The agent writes the prose, shell decides
   # where the code actually goes.
   - id: ship_code
-    depends: finalize_openspec_change
+    depends: run_ci_before_ship
     preconditions: *claimed
     working_dir: ${env.PROJECT_WORKSPACE}
     timeout_sec: 1800          # the description and the push
@@ -265,6 +290,24 @@ steps:
       fast 1
 
   # --------------------------------------------------------------- report ----
+  # What the run cost, phase by phase: tokens in and out, how much of the input
+  # was a cached prefix, wall clock, and how many commands each phase ran. Every
+  # phase already wrote its model's own accounting to `agent-stream.jsonl`; until
+  # now nothing read it, so a phase that quietly spent five times its neighbours
+  # went unnoticed for as long as it kept succeeding.
+  #
+  # Its own step, before the reporting one, so it has a line in the run view and
+  # so `usage.md` exists on disk for the issue comment to carry. `continue_on`,
+  # because an arithmetic slip in a report must not turn a delivered pull request
+  # into a failed run.
+  - id: summarize_run_usage
+    depends: ship_code
+    preconditions: *claimed
+    continue_on: *carry_on
+    run: >
+      ${consts.impl}/summarize-run.sh
+      "${consts.run_dir_root}/${claim_ready_issue.output.issue_number}/implement"
+
   # Runs whichever phase the run reached. It reads state.json to learn where the
   # run stopped and names that phase in the comment, so a killed run says how far
   # it got instead of only that it died. The label recovery that was the step
@@ -275,7 +318,7 @@ steps:
   # No `continue_on` here, deliberately: nothing follows, and a non-completed run
   # has to reach the UI as red.
   - id: report_run_outcome
-    depends: ship_code
+    depends: summarize_run_usage
     preconditions: *claimed
     working_dir: ${env.PROJECT_WORKSPACE}
     run: >

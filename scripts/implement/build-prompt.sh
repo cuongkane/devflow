@@ -17,7 +17,9 @@
 #
 # The placeholders are substituted here rather than inside the DAG so that the
 # untrusted parts of an issue never reach a prompt as text. The brief is passed
-# as a path; the agent reads it as data.
+# as a path; the agent reads it as data. The same holds for the branch diff and
+# the repository's conventions: shell produces the file, the prompt names the
+# path, and the phase spends one read instead of a discovery.
 set -eu
 
 phase=$1
@@ -57,6 +59,18 @@ esac
 # shellcheck disable=SC2086  # word splitting is how the list of names is passed
 "$project_dir/scripts/standards.sh" $standards > "$out_dir/standards.md"
 
+# The diff, handed to the phase rather than obtained by it, and regenerated here
+# because every phase runs after something changed the branch.
+#
+# Every phase, not a list of the ones that obviously want it. A list was cheaper
+# by one `git diff` and made the preamble false: it tells all nine phases the
+# diff "is complete and current", so the phases left off the list were being
+# pointed at a file that was either absent or left over from an earlier phase and
+# silently stale. `fix-verify` was the worst of the two -- it runs after the code
+# and test phases have committed, so the stale copy it would have read was
+# missing exactly the changes it was called in to fix.
+"$here/write-diff.sh" "$run_dir"
+
 cat "$prompts_dir/_preamble.md" "$src" "$out_dir/standards.md" \
   | sed -e "s|{{SKILL}}|$skill|g" \
         -e "s|{{REPO}}|$repo|g" \
@@ -64,6 +78,11 @@ cat "$prompts_dir/_preamble.md" "$src" "$out_dir/standards.md" \
         -e "s|{{ISSUE_NUMBER}}|$issue|g" \
         -e "s|{{BRIEF_PATH}}|$run_dir/brief.md|g" \
         -e "s|{{RUN_DIR}}|$run_dir|g" \
+        -e "s|{{CONVENTIONS_PATH}}|$run_dir/conventions.md|g" \
+        -e "s|{{DIFF_PATH}}|$run_dir/diff.md|g" \
+        -e "s|{{DIFF_STAT_PATH}}|$run_dir/diff.stat|g" \
+        -e "s|{{VERIFY_SUMMARY_PATH}}|$run_dir/verify.summary.log|g" \
+        -e "s|{{VERIFY_TAIL_PATH}}|$run_dir/verify.tail.log|g" \
         -e "s|{{WORKTREE}}|$worktree|g" \
         -e "s|{{BRANCH}}|$branch|g" \
         -e "s|{{BASE}}|$base|g" \

@@ -195,14 +195,17 @@ scripts/implement/claim-ready-issue.sh   take the oldest ready issue
 scripts/implement/fetch-issue-brief.sh   derive slug, branch, worktree, change name
 scripts/implement/announce-start.sh      say on the issue that work has begun
 scripts/implement/create-worktree.sh     git worktree add, deterministically
+scripts/implement/write-conventions.sh   every CLAUDE.md/AGENTS.md, concatenated once
 scripts/implement/build-prompt.sh        preamble + phase prompt, placeholders filled
+scripts/implement/write-diff.sh          the branch diff, for the phases that judge it
 scripts/implement/run-phase.sh           prompt -> agent at a model tier -> contract
 scripts/implement/check-phase-result.sh  enforce one phase's exit contract
 scripts/implement/run-verification.sh    the target repo's own test/lint/build set
 scripts/implement/run-ci-until-passing.sh
                                          run it, fix what fails, repeat
 scripts/implement/resolve-review-comments.sh
-                                         act on review-comments.md, then verify
+                                         act on review-comments.md
+scripts/implement/summarize-run.sh       tokens and duration, phase by phase
 scripts/implement/finalize-openspec-change.sh
                                          sync the specs, then archive the change
 scripts/implement/archive-change.sh      openspec archive --yes, then validate
@@ -243,10 +246,21 @@ It is now the skill's own phases, one step each:
 | `write_tests_until_passing` | agent | **deep** | 4 | 60m |
 | `run_ci_until_passing` | shell + agent | standard | 2 × 2 | 2h |
 | `review_code` | agent | **deep** | 3 | 30m |
-| `resolve_review_comment` | agent + shell | **deep** + standard | 3 + 2 | 2h |
+| `resolve_review_comment` | agent | **deep** | 3 | 60m |
 | `finalize_openspec_change` | agent + shell | fast | 1 | 25m |
+| `run_ci_before_ship` | shell + agent | standard | 2 × 1 | 2h |
 | `ship_code` | agent + shell | fast | 1 | 30m |
+| `summarize_run_usage` | shell | — | — | — |
 | `report_run_outcome` | shell | — | — | — |
+
+**The suite runs twice, and the second one is the verdict.**
+`run_ci_until_passing` is an early gate: it stops a deep review being spent on a
+diff that does not compile. `run_ci_before_ship` is the authoritative run, and it
+sits after the spec sync because that is the only point where every commit the
+branch will ever have already exists. It used to be the tail of
+`resolve_review_comment`, which ran it one sync too early — the frontend
+production build the pull request claimed was not built from the tree that was
+pushed.
 
 The steps are one line each because their bodies live in `scripts/implement/` and
 their prompts in `prompts/implement/`. This DAG only says what order things
@@ -298,7 +312,7 @@ attempts, and only its own exit status ends the run. It replaces an unrolled
 run → fix → rerun chain gated on `verify.status` files, which allowed exactly one
 fix and spent three lines of the run view saying so. The verdict stays in shell on
 every attempt — the agent reacts to a failing suite, it never declares the suite
-passed. Failed attempts are kept as `verify.<stage>-<n>.log` so a long fight is
+passed. Failed attempts are kept as `verify.<stage>-<n>.summary.log` so a long fight is
 readable afterwards, and the fix prompt is told to read the previous one.
 
 `resolve-code-review` owns both response and cleanup because both start from
@@ -423,10 +437,20 @@ project configuration. Then run `make labels` for the target repo.
   (1 explore, 2 propose, 5 code, 4 tests, 3 review, 3 resolve-review, 1 sync,
   1 write-up) totalling 20 when nothing has to be fixed. The two fix loops are on
   top of that at 2 per attempt — up to 4 in `run_ci_until_passing` and 2 in
-  `resolve_review_comment` — so 26 is the worst case.
+  `run_ci_before_ship` — so 26 is the worst case.
   Splitting implementation into phases means several fresh agents re-read the
   repository instead of one accumulating context, so expect the first runs to
   cost more than the old single $15 step until the tiers and budgets are tuned.
+- **Input, not output, is what the pipeline spends.** A phase re-sends its whole
+  context to the model on every step it takes, so a command that prints 100 KB is
+  charged again on each of the steps that follow it. Issue #116 ran to 20.7M
+  input tokens against 142k output. What holds it down is shell doing the reading
+  — `write-conventions.sh` and `write-diff.sh` produce files the phases are
+  pointed at, `run-verification.sh` writes a 1 KB summary beside its 300 KB log —
+  and `rtk`, installed in the worker image, filtering whatever the agent runs
+  itself. `summarize_run_usage` is how a regression in any of that gets noticed:
+  it prints tokens, duration and command count per phase, and the same table is
+  folded into the issue comment.
 - **Two implementations at a time.** Each `implement-clarified-task` run claims
   one issue and exposes its full processing sequence as top-level DAG steps.
   Scheduled runs use the `implementation` queue, whose service-level
