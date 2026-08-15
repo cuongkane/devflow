@@ -36,6 +36,11 @@ setting() {
 
 model=$(setting "model_${agent}_${tier}")
 
+# `<cli default>` rather than an empty string: for codex every tier currently
+# maps to `default`, and a blank field in the log reads as "nobody chose", which
+# is exactly the question this line exists to answer.
+model_shown=${model:-<cli default>}
+
 case "$agent" in
   codex)
     # Build the flags as an array: an unset model must contribute no argument at
@@ -44,13 +49,19 @@ case "$agent" in
     [ -n "$model" ] && args+=(--model "$model")
     effort=$(setting "effort_codex_${tier}")
     [ -n "$effort" ] && args+=(-c "model_reasoning_effort=\"$effort\"")
+
+    # stdout, not stderr: which model ran a phase is the first thing anyone asks
+    # of a run log, and the dagu UI keeps stderr in a separate pane. This printf
+    # is not part of the pipe into jq below, so it cannot corrupt the renderer.
     printf 'agent: codex  tier: %s  model: %s  effort: %s\n' \
-      "$tier" "${model:-<cli default>}" "${effort:-<cli default>}" >&2
+      "$tier" "$model_shown" "${effort:-<cli default>}"
 
     codex "${args[@]}" - \
       < "$prompt_file" \
       | tee "$stream_file" \
-      | jq -r --unbuffered -f "$project_dir/render-agent-stream.jq"
+      | jq -r --unbuffered \
+          --arg agent codex --arg tier "$tier" --arg model "$model_shown" \
+          -f "$project_dir/render-agent-stream.jq"
     ;;
   claude)
     args=(-p "$(cat "$prompt_file")"
@@ -60,11 +71,13 @@ case "$agent" in
           --max-budget-usd "$budget_usd")
     [ -n "$model" ] && args+=(--model "$model")
     printf 'agent: claude  tier: %s  model: %s  budget: $%s\n' \
-      "$tier" "${model:-<cli default>}" "$budget_usd" >&2
+      "$tier" "$model_shown" "$budget_usd"
 
     claude "${args[@]}" \
       | tee "$stream_file" \
-      | jq -r --unbuffered -f "$project_dir/render-agent-stream.jq"
+      | jq -r --unbuffered \
+          --arg agent claude --arg tier "$tier" --arg model "$model_shown" \
+          -f "$project_dir/render-agent-stream.jq"
     ;;
   *)
     printf 'Unsupported agent %s in %s (expected codex or claude)\n' \

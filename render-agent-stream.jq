@@ -1,8 +1,17 @@
 # Render Claude or Codex JSONL into a readable Dagu run log.
+#
+# $agent, $tier and $model come from run-agent.sh, which resolved them from
+# agent.yaml. The two session lines below were asymmetric -- claude reported a
+# model and no agent, codex an agent and no model -- so neither answered "what
+# actually ran this phase" on its own.
 if .type == "system" and .subtype == "init" then
-  "session \(.session_id // "?")  model=\(.model // "?")"
+  # Claude reports the model it loaded. Prefer it over the configured name: the
+  # configuration holds a tier alias like `opus`, this is what that resolved to.
+  "session \(.session_id // "?")  agent=\($agent)  tier=\($tier)  model=\(.model // $model)"
 elif .type == "thread.started" then
-  "session \(.thread_id // "?")  agent=codex"
+  # Codex's thread.started carries no model, so the configured name is the best
+  # available answer -- and `<cli default>` says honestly that we do not know.
+  "session \(.thread_id // "?")  agent=\($agent)  tier=\($tier)  model=\($model)"
 elif .type == "item.started" and .item.type == "command_execution" then
   "-> shell \(.item.command // "")"
 elif .type == "item.completed" and .item.type == "command_execution" then

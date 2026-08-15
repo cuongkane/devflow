@@ -1,8 +1,9 @@
 #!/usr/bin/env sh
-# Verify the worktree, fixing what fails, until the checks pass.
+# Run the target repository's CI checks against the worktree, fixing what fails,
+# until they pass.
 #
-#   verify-until-green.sh <run-dir> <repo> <workspace> <skill>
-#                         [<max-attempts>] [<tier>] [<budget-usd>] [<stage>]
+#   run-ci-until-passing.sh <run-dir> <repo> <workspace> <skill>
+#                           [<max-attempts>] [<tier>] [<budget-usd>] [<stage>]
 #
 # This used to be three DAG steps -- run, fix, rerun -- wired together with
 # preconditions that read `verify.status` off disk, and it still only allowed a
@@ -26,7 +27,7 @@ repo=$2
 workspace=$3
 skill=$4
 attempts=${5:-3}
-tier=${6:-deep}
+tier=${6:-standard}   # reacting to a named failure, with the suite as the check
 budget=${7:-2}
 stage=${8:-verify}
 

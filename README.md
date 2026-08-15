@@ -167,7 +167,7 @@ agent.yaml                               global coding-agent selection
 project.env                              shared repository, workspace and skill defaults
 
 dags/clarify-task.yaml                   poll -> claim -> clarify -> report
-dags/implement-clarified-task.yaml       poll -> claim -> eight phases -> report
+dags/implement-clarified-task.yaml       poll -> claim -> phase by phase -> report
 dags/resolve-code-review.yaml            poll -> triage -> respond | finish
 dags/check-health.yaml                   host worker health check
 
@@ -199,12 +199,20 @@ scripts/implement/build-prompt.sh        preamble + phase prompt, placeholders f
 scripts/implement/run-phase.sh           prompt -> agent at a model tier -> contract
 scripts/implement/check-phase-result.sh  enforce one phase's exit contract
 scripts/implement/run-verification.sh    the target repo's own test/lint/build set
-scripts/implement/verify-until-green.sh  run it, fix what fails, repeat
+scripts/implement/run-ci-until-passing.sh
+                                         run it, fix what fails, repeat
 scripts/implement/resolve-review-comments.sh
                                          act on review-comments.md, then verify
+scripts/implement/finalize-openspec-change.sh
+                                         sync the specs, then archive the change
 scripts/implement/archive-change.sh      openspec archive --yes, then validate
+scripts/implement/ship-code.sh           write the description, then open the PR
 scripts/implement/open-pull-request.sh   verify origin, commit, push, gh pr create
+scripts/implement/report-and-recover.sh  report the outcome, then never leave the
+                                         issue on agent:implementing
 scripts/implement/report-outcome.sh      comment the outcome, name the failed phase
+scripts/implement/recover-stranded-label.sh
+                                         the fallback when reporting itself failed
 
 run-agent.sh                             configured agent + tier + live streaming
 render-agent-stream.jq                   shared Claude/Codex stream renderer
@@ -231,15 +239,14 @@ It is now the skill's own phases, one step each:
 | `create_feature_worktree` | shell | — | — | — |
 | `explore_codebase_context` | agent | fast | 1 | 15m |
 | `write_openspec_proposal` | agent | standard | 2 | 15m |
-| `write_code_and_tests` | agent | **deep** | 7 | 75m |
-| `verify_until_green` | shell + agent | deep | 2 × 2 | 2h |
+| `write_implementation_code` | agent | **deep** | 5 | 60m |
+| `write_tests_until_passing` | agent | **deep** | 4 | 60m |
+| `run_ci_until_passing` | shell + agent | standard | 2 × 2 | 2h |
 | `review_code` | agent | **deep** | 3 | 30m |
-| `resolve_review_comment` | agent + shell | deep | 3 + 2 | 2h |
-| `sync_openspec_specs` | agent | fast | 1 | 15m |
-| `archive_openspec_change` | shell | — | — | 10m |
-| `write_pr_description` | agent | fast | 1 | 15m |
-| `push_and_open_pull_request` | shell | — | — | 15m |
-| `report_outcome_on_issue` | shell | — | — | — |
+| `resolve_review_comment` | agent + shell | **deep** + standard | 3 + 2 | 2h |
+| `finalize_openspec_change` | agent + shell | fast | 1 | 25m |
+| `ship_code` | agent + shell | fast | 1 | 30m |
+| `report_run_outcome` | shell | — | — | — |
 
 The steps are one line each because their bodies live in `scripts/implement/` and
 their prompts in `prompts/implement/`. This DAG only says what order things
@@ -285,7 +292,7 @@ turns the skill's rule that a frontend build must come from the *final* source
 state into a second step in the graph rather than a promise an agent has to keep
 two hours into a run.
 
-**Verification is one step that loops.** `verify_until_green` runs the suite; if it
+**Verification is one step that loops.** `run_ci_until_passing` runs the suite; if it
 fails it runs the `fix-verify` phase and runs the suite again, up to three
 attempts, and only its own exit status ends the run. It replaces an unrolled
 run → fix → rerun chain gated on `verify.status` files, which allowed exactly one
@@ -413,8 +420,11 @@ project configuration. Then run `make labels` for the target repo.
   none of them merges anything, and the closer only acts on a pull request
   GitHub reports as already merged. `--max-budget-usd` caps spend, not blast
   radius: 4 for clarify, 8 for respond, and a per-phase budget for implement
-  (1 explore, 2 propose, 7 code, 2 fix, 3 review, 3 resolve-review, 1 sync,
-  1 write-up) totalling 20. Splitting implementation into phases means several fresh agents re-read the
+  (1 explore, 2 propose, 5 code, 4 tests, 3 review, 3 resolve-review, 1 sync,
+  1 write-up) totalling 20 when nothing has to be fixed. The two fix loops are on
+  top of that at 2 per attempt — up to 4 in `run_ci_until_passing` and 2 in
+  `resolve_review_comment` — so 26 is the worst case.
+  Splitting implementation into phases means several fresh agents re-read the
   repository instead of one accumulating context, so expect the first runs to
   cost more than the old single $15 step until the tiers and budgets are tuned.
 - **Two implementations at a time.** Each `implement-clarified-task` run claims

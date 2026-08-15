@@ -12,7 +12,7 @@
 # are not independent: fixes made here are unreviewed code, the skill requires the
 # frontend production build to come from the *final* source state, and a review
 # fix that broke something should be fixed rather than end the run red one step
-# from the pull request. `verify-until-green.sh` already owns that loop.
+# from the pull request. `run-ci-until-passing.sh` already owns that loop.
 #
 # When the review found nothing, no model runs at all -- the file says `NONE`, and
 # what is left is one clean pass of the suite.
@@ -56,5 +56,9 @@ else
   [ "$status" -eq 0 ] || exit "$status"
 fi
 
-exec "$here/verify-until-green.sh" "$run_dir" "$repo" "$workspace" "$skill" \
-  "$attempts" deep 2 final
+# `standard` for the fix agent, matching run_ci_until_passing: this is the same
+# phase with the same safety net -- a named failure to react to, and the suite
+# re-run as the verdict. The resolve-review agent above stays deep; it is the one
+# doing open-ended work here.
+exec "$here/run-ci-until-passing.sh" "$run_dir" "$repo" "$workspace" "$skill" \
+  "$attempts" standard 2 final

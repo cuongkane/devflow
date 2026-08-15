@@ -170,17 +170,24 @@ steps:
   # suite runs again, in a loop inside the step. It was previously an unrolled
   # run/fix/rerun chain gated on preconditions -- which put a hard ceiling of one
   # fix on the graph, and spent three lines of the run view saying so.
-  - id: verify_until_green
+  #
+  # `standard`, not `deep`, and this is the phase where that is safest: the fix
+  # agent is handed a concrete failure to react to rather than an open problem to
+  # solve, and the shell suite re-runs after every attempt, so a bad fix is
+  # caught mechanically rather than shipped. It is also the phase that runs most
+  # often -- up to twice here and once more after the review -- which makes it
+  # the most expensive tier in the DAG to leave at deep.
+  - id: run_ci_until_passing
     depends: write_tests_until_passing
     preconditions: *claimed
     timeout_sec: 7200          # the whole loop, not one pass of the suite
     retry_policy: *no_retry
     continue_on: *carry_on
     run: >
-      ${consts.impl}/verify-until-green.sh
+      ${consts.impl}/run-ci-until-passing.sh
       "${consts.run_dir_root}/${claim_ready_issue.output.issue_number}/implement"
       "${env.PROJECT_REPO}" "${env.PROJECT_WORKSPACE}" "${env.IMPLEMENT_SKILL}"
-      3 deep 2 verify
+      3 standard 2 verify
 
   # ------------------------------------------------------------- review ----
   # Reviewing and fixing are two steps, not one. The review writes its findings to
@@ -189,7 +196,7 @@ steps:
   # on disk as a reviewable artefact instead of dissolving into the diff, and a
   # visible answer to "did the review actually find anything?".
   - id: review_code
-    depends: verify_until_green
+    depends: run_ci_until_passing
     preconditions: *claimed
     working_dir: ${env.PROJECT_WORKSPACE}
     timeout_sec: 1800
@@ -221,76 +228,60 @@ steps:
       deep 3 2
 
   # ------------------------------------------------ specifications, then PR ----
-  - id: sync_openspec_specs
+  # Syncing and archiving are one step: syncing without archiving leaves the
+  # change active on top of specs that already describe it, and archiving without
+  # syncing throws the deltas away. The agent merges the prose; the archive is
+  # `openspec archive --yes` from shell, because the repository's own archive
+  # skill prompts for a change and for warning confirmation and cannot run
+  # unattended. The division is inside the script, not in the graph.
+  - id: finalize_openspec_change
     depends: resolve_review_comment
     preconditions: *claimed
     working_dir: ${env.PROJECT_WORKSPACE}
-    timeout_sec: 900
+    timeout_sec: 1500          # the sync phase and the archive, not one of them
     retry_policy: *no_retry
     continue_on: *carry_on
     run: >
-      ${consts.impl}/run-phase.sh sync
+      ${consts.impl}/finalize-openspec-change.sh
       "${consts.run_dir_root}/${claim_ready_issue.output.issue_number}/implement"
       "${env.PROJECT_REPO}" "${env.PROJECT_WORKSPACE}" "${env.IMPLEMENT_SKILL}"
       fast 1
 
-  # Shell, not agent: the repository's own archive skill prompts the operator to
-  # pick a change and confirm warnings, which cannot work unattended.
-  - id: archive_openspec_change
-    depends: sync_openspec_specs
-    preconditions: *claimed
-    timeout_sec: 600
-    continue_on: *carry_on
-    run: >
-      ${consts.impl}/archive-change.sh
-      "${consts.run_dir_root}/${claim_ready_issue.output.issue_number}/implement"
-
-  - id: write_pr_description
-    depends: archive_openspec_change
+  # Likewise one step: the description exists only to be the body of the pull
+  # request opened straight after it. The agent writes the prose, shell decides
+  # where the code actually goes.
+  - id: ship_code
+    depends: finalize_openspec_change
     preconditions: *claimed
     working_dir: ${env.PROJECT_WORKSPACE}
-    timeout_sec: 900
+    timeout_sec: 1800          # the description and the push
     retry_policy: *no_retry
     continue_on: *carry_on
     run: >
-      ${consts.impl}/run-phase.sh pr-body
-      "${consts.run_dir_root}/${claim_ready_issue.output.issue_number}/implement"
-      "${env.PROJECT_REPO}" "${env.PROJECT_WORKSPACE}" "${env.IMPLEMENT_SKILL}"
-      fast 1
-
-  - id: push_and_open_pull_request
-    depends: write_pr_description
-    preconditions: *claimed
-    timeout_sec: 900
-    continue_on: *carry_on
-    run: >
-      ${consts.impl}/open-pull-request.sh
+      ${consts.impl}/ship-code.sh
       "${env.PROJECT_REPO}"
       "${consts.run_dir_root}/${claim_ready_issue.output.issue_number}/implement"
+      "${env.PROJECT_WORKSPACE}" "${env.IMPLEMENT_SKILL}"
+      fast 1
 
   # --------------------------------------------------------------- report ----
   # Runs whichever phase the run reached. It reads state.json to learn where the
   # run stopped and names that phase in the comment, so a killed run says how far
-  # it got instead of only that it died.
-  - id: report_outcome_on_issue
-    depends: push_and_open_pull_request
+  # it got instead of only that it died. The label recovery that was the step
+  # after this one is now the second half of the same script, and still runs when
+  # the reporting half fails -- what was `continue_on` between two steps is a
+  # `|| true` between two lines.
+  #
+  # No `continue_on` here, deliberately: nothing follows, and a non-completed run
+  # has to reach the UI as red.
+  - id: report_run_outcome
+    depends: ship_code
     preconditions: *claimed
     working_dir: ${env.PROJECT_WORKSPACE}
-    continue_on: *carry_on
     run: >
-      ${consts.impl}/report-outcome.sh
+      ${consts.impl}/report-and-recover.sh
       "${env.PROJECT_REPO}"
       "${consts.run_dir_root}/${claim_ready_issue.output.issue_number}/implement"
-      "${context.run.id}"
-      "${context.paths.log_file}"
-
-  - id: recover_stranded_label
-    depends: report_outcome_on_issue
-    preconditions: *claimed
-    working_dir: ${env.PROJECT_WORKSPACE}
-    run: >
-      ${consts.impl}/recover-stranded-label.sh
-      "${env.PROJECT_REPO}"
       "${claim_ready_issue.output.issue_number}"
       "${context.run.id}"
       "${context.paths.log_file}"

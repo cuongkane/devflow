@@ -93,9 +93,9 @@ verify: ## Verify one issue, fixing until green: make verify ISSUE=42 [ATTEMPTS=
 	@test -n "$(ISSUE)" || { echo "usage: make verify ISSUE=<number> [ATTEMPTS=n]"; exit 1; }
 	@test -f /tmp/dagu-agent/$(ISSUE)/implement/state.json \
 		|| { echo "no run directory for issue $(ISSUE): run 'make implement ISSUE=$(ISSUE)' first"; exit 1; }
-	scripts/implement/verify-until-green.sh /tmp/dagu-agent/$(ISSUE)/implement \
+	scripts/implement/run-ci-until-passing.sh /tmp/dagu-agent/$(ISSUE)/implement \
 		"$(PROJECT_REPO)" "$(PROJECT_WORKSPACE)" "$(IMPLEMENT_SKILL)" \
-		"$(or $(ATTEMPTS),3)" deep 2 manual
+		"$(or $(ATTEMPTS),3)" standard 2 manual
 
 respond: ## Resolve the current review state now: make respond ISSUE=42
 	@test -n "$(ISSUE)" || { echo "usage: make respond ISSUE=<number>"; exit 1; }
