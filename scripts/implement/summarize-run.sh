@@ -18,9 +18,10 @@
 # from uncached -- cached input is the prefix being re-sent, and a phase whose
 # cached column dwarfs its neighbours' is a phase that read too much too early.
 #
-# Both agent formats are handled: codex reports per-turn usage on
-# `turn.completed`, claude reports it on the final `result` event, and only
-# claude reports a cost. Neither is required to be present -- a phase that never
+# All three agent formats are handled: codex reports per-turn usage on
+# `turn.completed`, claude reports it on the final `result` event, opencode
+# reports it per step on `step_finish`, and codex is the only one of the three
+# that reports no cost. None is required to be present -- a phase that never
 # ran shows as a blank row rather than being omitted, because "this phase did not
 # run" is itself the answer when a run ended early.
 set -eu
@@ -59,6 +60,9 @@ usage_of() {
                     and .item.type == "command_execution")] as $codex_calls
     | [.[] | select(.type == "assistant")
            | .message.content[]? | select(.type == "tool_use")] as $claude_calls
+    | [.[] | select(.type == "step_finish") | .part]    as $opencode
+    | [.[] | select(.type == "tool_use" and (.part.type // "") == "tool")]
+                                                        as $opencode_calls
     | if ($codex | length) > 0 then
         [ ($codex | map(.input_tokens // 0)            | add),
           ($codex | map(.cached_input_tokens // 0)     | add),
@@ -75,6 +79,19 @@ usage_of() {
           0,
           ($claude_calls | length),
           ($claude | map(.total_cost_usd // 0) | add | tostring) ]
+      elif ($opencode | length) > 0 then
+        # opencode counts cached input separately from `input` rather than
+        # inside it -- the three add up to the `total` it also reports -- so the
+        # cache figures are added back in here to make this column mean the same
+        # thing it means for the other two agents: everything sent to the model.
+        [ ($opencode | map((.tokens.input // 0)
+                         + (.tokens.cache.read // 0)
+                         + (.tokens.cache.write // 0)) | add),
+          ($opencode | map(.tokens.cache.read // 0) | add),
+          ($opencode | map(.tokens.output // 0) | add),
+          ($opencode | map(.tokens.reasoning // 0) | add),
+          ($opencode_calls | length),
+          ($opencode | map(.cost // 0) | add | tostring) ]
       else
         [0, 0, 0, 0, 0, "-"]
       end
@@ -198,7 +215,8 @@ fi
 reached=$("$here/state.sh" get "$run_dir" phase 2>/dev/null || echo '?')
 issue=$("$here/state.sh" get "$run_dir" issue 2>/dev/null || echo '?')
 
-# Only claude reports a cost. Summed in awk because dash has no float
+# claude and opencode report a cost; codex does not. Summed in awk because dash
+# has no float
 # arithmetic, and printed only when at least one phase reported one.
 cost_line=''
 if [ -n "$costs" ]; then

@@ -15,9 +15,11 @@ The coding-agent CLI is selected once in `agent.yaml`:
 agent: codex
 ```
 
-Change it to `agent: claude` to switch every AI-backed stage, then restart the
-worker. Both CLIs are installed in the worker image and use the host credentials
-mounted by Compose.
+Change it to `agent: claude` or `agent: opencode` to switch every AI-backed
+stage, then restart the worker. All three CLIs are installed in the worker image
+and use the host credentials mounted by Compose — except Claude Code, whose
+macOS login lives in the Keychain and which therefore carries its own token; see
+[Credential mounts](#credential-mounts).
 
 The same file maps three **model tiers** — `fast`, `standard`, `deep` — to a
 concrete model for each agent. A DAG step asks for a tier, never a model, so
@@ -25,9 +27,23 @@ switching the agent above leaves every step valid:
 
 ```yaml
 model_claude_deep: opus
-model_codex_deep: default     # `default` means "pass no model flag"
-effort_codex_deep: high       # codex expresses depth as reasoning effort
+model_codex_deep: default        # `default` means "pass no model flag"
+effort_codex_deep: high          # codex expresses depth as reasoning effort
+model_opencode_deep: deepseek/deepseek-v4-pro   # `provider/model`
+variant_opencode_deep: default   # its depth axis is `--variant`
 ```
+
+Leave `default` in place for codex and claude, but **pin the opencode tiers to a
+real model**. Left to itself opencode picks one, and the model it picks may be
+reachable only through a route with no tool-calling endpoints — which fails every
+phase on its first turn with `No endpoints found that support tool use`. The
+provider prefix decides this: `deepseek/…` is the DeepSeek API direct and
+supports tools, `openrouter/deepseek/…` is the same model through a route that
+does not. `opencode models` lists what the current login can reach.
+
+Only Claude Code enforces the per-phase spend cap the DAGs pass in; codex and
+opencode have no such flag, so for those two the cap is recorded in the run log
+and in the usage table but nothing holds the run to it.
 
 ## Start it
 
@@ -132,12 +148,12 @@ SSH keys, GitHub CLI auth, coding-agent auth/skills, and the target repository's
 worktree directory.
 
 ```
-┌─ dagu service ────────────┐          ┌─ worker service ─────────────┐
-│ dagu start-all            │          │ dagu worker                  │
-│  • scheduler (cron)       │◀─ gRPC ──│  --worker.labels host=true   │
-│  • web UI      :8525      │          │  codex/claude, gh, git, jq, │
-│  • coordinator :50055     │          │  make, docker, repositories  │
-└───────────────────────────┘          └──────────────────────────────┘
+┌─ dagu service ────────────┐          ┌─ worker service ───────────────┐
+│ dagu start-all            │          │ dagu worker                    │
+│  • scheduler (cron)       │◀─ gRPC ──│  --worker.labels host=true     │
+│  • web UI      :8525      │          │  codex/claude/opencode, gh,    │
+│  • coordinator :50055     │          │  git, jq, make, docker, repos  │
+└───────────────────────────┘          └────────────────────────────────┘
 ```
 
 All three task DAGs set `worker_selector: {host: "true"}`, at DAG level, so
@@ -149,8 +165,14 @@ and configuration referenced by absolute path within those definitions.
 
 Compose forwards the existing host login rather than copying secrets into the
 image. `make up` reads the GitHub token from the macOS Keychain through
-`gh auth token` and injects it into the worker runtime; Codex and Claude use
-their mounted credential files. At startup the worker writes the token into its
+`gh auth token` and injects it into the worker runtime; Codex and opencode use
+their mounted credential files (`~/.codex/auth.json` and
+`~/.local/share/opencode/auth.json`). Claude Code is the exception: on macOS it
+keeps its login in the Keychain, so there is no file to mount and the worker
+carries a separate `claude setup-token` token written by
+`scripts/set-agent-token.sh`, revocable on its own.
+
+At startup the worker writes the GitHub token into its
 own Linux-local GitHub CLI configuration because Dagu steps do not inherit every
 worker environment variable. Agent configuration, skills, Git config, and SSH
 keys are read-only. Anyone able to control a workflow can still execute commands
@@ -218,7 +240,7 @@ scripts/implement/recover-stranded-label.sh
                                          the fallback when reporting itself failed
 
 run-agent.sh                             configured agent + tier + live streaming
-render-agent-stream.jq                   shared Claude/Codex stream renderer
+render-agent-stream.jq                   shared Claude/Codex/opencode renderer
 
 data/  logs/                             runtime state (gitignored)
 ```
@@ -413,10 +435,16 @@ review-feedback counts, pull-request details, final outcome, and elapsed time.
 Queue polls explicitly say when there is no work, so an idle run is distinguishable
 from a silent or failed one.
 
-The dispatcher selects the provider-specific JSONL mode (`--json` for Codex or
-`--output-format stream-json` for Claude). The raw event stream is teed to
-`agent-stream.jsonl` for debugging; stderr stays a separate pane, because a
-non-JSON warning mixed into stdout would abort the `jq` renderer.
+The dispatcher selects the provider-specific JSONL mode (`--json` for Codex,
+`--output-format stream-json` for Claude, `--format json` for opencode). The raw
+event stream is teed to `agent-stream.jsonl` for debugging; stderr stays a
+separate pane, because a non-JSON warning mixed into stdout would abort the `jq`
+renderer.
+
+opencode has no session-start event — every event carries the session id and
+none announces it — so its session line is printed after the stream instead of
+before it. Feed that id to `opencode export <session-id>` to re-read a finished
+phase.
 
 All of that lives in `run-agent.sh`, so the selection and streaming behavior
 reach all three agents.

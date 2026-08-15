@@ -11,7 +11,7 @@ steps:
     run: |
       set -eu
       agent=$(awk '/^[[:space:]]*agent:[[:space:]]*/ {print $2; exit}' /Users/lexuancuong/CUONG/DAGU/agent.yaml)
-      case "$agent" in codex|claude) ;; *) echo "Unsupported agent: $agent" >&2; exit 2 ;; esac
+      case "$agent" in codex|claude|opencode) ;; *) echo "Unsupported agent: $agent" >&2; exit 2 ;; esac
       # openspec is here because the implementation DAG calls it from shell to
       # validate and archive changes. It is a Volta global on the host and a
       # plain npm global in the worker image, so it is the tool most likely to be
@@ -34,4 +34,8 @@ steps:
       case "$agent" in
         codex) printf 'Reply with exactly OK' | codex exec --sandbox read-only --skip-git-repo-check - ;;
         claude) claude -p "Reply with exactly OK" --max-turns 1 ;;
+        # No read-only mode to ask for: opencode gates tools behind permissions
+        # instead, and without --auto it rejects them, which is the read-only
+        # behaviour this probe wants. A one-word reply needs no tools anyway.
+        opencode) printf 'Reply with exactly OK' | opencode run ;;
       esac

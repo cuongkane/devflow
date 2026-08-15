@@ -1,5 +1,6 @@
-# Coding agent used by every AI-backed DAG. Supported values: codex, claude.
-agent: codex
+# Coding agent used by every AI-backed DAG. Supported values: codex, claude,
+# opencode.
+agent: opencode
 
 # Model tier -> concrete model, per agent. DAG steps ask for a tier
 # (fast | standard | deep) rather than a model name, so a DAG stays valid when
@@ -13,7 +14,7 @@ agent: codex
 # failing the run.
 model_claude_fast: haiku
 model_claude_standard: sonnet
-model_claude_deep: opus
+model_claude_deep: sonnet
 
 model_codex_fast: default
 model_codex_standard: default
@@ -25,3 +26,29 @@ model_codex_deep: default
 effort_codex_fast: low
 effort_codex_standard: medium
 effort_codex_deep: high
+
+# opencode names a model as `provider/model`. Unlike the two agents above, these
+# tiers are pinned rather than left at `default`, because `default` is not safe
+# here: with no --model flag opencode picks a model itself, and in the worker
+# that resolved to a DeepSeek model routed through OpenRouter, whose endpoints do
+# not offer tool calling at all. Every phase is nothing but tool calls, so the
+# run died on its first turn with "No endpoints found that support tool use".
+#
+# The provider prefix is load-bearing: `deepseek/` is the DeepSeek API direct,
+# which does support tools; `openrouter/deepseek/` is the same model through a
+# route that does not. Naming the direct provider is what fixes this.
+#
+# Direct DeepSeek is currently the only provider in the opencode login that
+# works: the `anthropic/` entry returns 401, and the OpenRouter account is out of
+# credits. Re-point these if that changes -- `opencode models` lists what is
+# reachable.
+model_opencode_fast: deepseek/deepseek-v4-flash
+model_opencode_standard: deepseek/deepseek-v4-pro
+model_opencode_deep: deepseek/deepseek-v4-pro
+
+# opencode's second axis is `--variant`, the provider-specific reasoning effort
+# (`minimal`, `high`, `max`, ... -- the accepted values depend on the model). It
+# is the same idea as effort_codex_*, so `default` again means "pass no flag".
+variant_opencode_fast: default
+variant_opencode_standard: default
+variant_opencode_deep: default

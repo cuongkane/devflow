@@ -63,6 +63,14 @@ services:
     environment:
       HOME: /root
       CODEX_HOME: /root/.codex
+      # Claude Code refuses `--permission-mode bypassPermissions` when it runs as
+      # uid 0 unless IS_SANDBOX is set, and this container is root by
+      # construction: every mount lands under /root. Codex has no equivalent
+      # check, so this only started mattering when agent.yaml switched to claude.
+      # The container is the sandbox the flag asks for -- it holds one project
+      # tree and scoped credential mounts -- so declare that rather than rebuild
+      # the image around a non-root user.
+      IS_SANDBOX: "1"
       # macOS gh keeps the active token in Keychain, which is not available in
       # Linux. The worker entrypoint converts this into its own gh config file.
       GH_TOKEN: ${GH_TOKEN:-}
@@ -84,7 +92,20 @@ services:
       - ${HOME}/.codex/plugins:/root/.codex/plugins:ro
       # The configured SweatCharge skills are symlinks into this repository.
       - /Users/lexuancuong/PP/dotfiles:/Users/lexuancuong/PP/dotfiles:ro
-      - ${HOME}/.claude/.credentials.json:/root/.claude/.credentials.json
+      # No ~/.claude/.credentials.json mount, unlike the codex one above: macOS
+      # Claude Code keeps its credentials in the Keychain, so that path holds
+      # nothing to mount -- and naming a source that does not exist makes Docker
+      # create an empty directory there, which would then shadow the real file if
+      # one ever appeared. The worker authenticates with its own token instead;
+      # see the claude branch of run-agent.sh.
+      # opencode keeps its provider logins in a plain file under the XDG data
+      # directory rather than in the Keychain, so unlike claude it can reuse the
+      # host login directly. Writable for the same reason as the codex one: the
+      # OAuth entries in it are refreshed in place. Only the file is mounted, not
+      # its directory -- that directory also holds opencode.db, which is close to
+      # a gigabyte of local session history the worker has no use for.
+      - ${HOME}/.local/share/opencode/auth.json:/root/.local/share/opencode/auth.json
+      - ${HOME}/.config/opencode:/root/.config/opencode:ro
       - ${HOME}/.claude/settings.json:/root/.claude/settings.json:ro
       - ${HOME}/.claude/plugins:/root/.claude/plugins:ro
       - ${HOME}/.gitconfig:/root/.gitconfig:ro

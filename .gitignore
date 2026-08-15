@@ -12,3 +12,6 @@ base.yaml
 
 .env
 .DS_Store
+
+# The worker's own Claude Code token. Never committed, never printed.
+.secrets/
