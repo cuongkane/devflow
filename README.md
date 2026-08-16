@@ -167,7 +167,10 @@ Compose forwards the existing host login rather than copying secrets into the
 image. `make up` reads the GitHub token from the macOS Keychain through
 `gh auth token` and injects it into the worker runtime; Codex and opencode use
 their mounted credential files (`~/.codex/auth.json` and
-`~/.local/share/opencode/auth.json`). Claude Code is the exception: on macOS it
+`~/.local/share/opencode/auth.json`). For opencode that file holds only what was
+added with `opencode auth login`; a provider authenticated by an environment
+variable (DeepSeek's `DEEPSEEK_API_KEY`, say) never reaches the worker. Claude
+Code is the exception: on macOS it
 keeps its login in the Keychain, so there is no file to mount and the worker
 carries a separate `claude setup-token` token written by
 `scripts/set-agent-token.sh`, revocable on its own.
@@ -389,6 +392,52 @@ agent-feature issue template applies `agent:todo`, so a blank issue or a plain
 `agent_auth` failing means the selected CLI's mounted host credential is missing
 or expired. Authenticate the CLI on the host, run `make up` to recreate the
 worker with the current credentials, then run `make health` again.
+
+### opencode: "Unexpected server error. Check server logs for details."
+
+An opencode phase that dies on its first turn with this message — no tokens, no
+tool calls, about a second — is failing because the `provider/model` named in
+`agent.yaml` is not reachable from the worker. The message is opaque on purpose:
+the worker's `opencode.log` stays empty and the JSONL carries only
+`{"type":"error","error":{"name":"UnknownError","data":{"message":"Unexpected
+server error..."}}}`.
+
+`make health` does **not** catch this: its `agent_auth` step runs `opencode run`
+with no `--model`, so it proves a login works but not that the configured model
+does. The fast diagnosis is a reachability check, host vs worker:
+
+```bash
+opencode models | grep -E '^(deepseek|openrouter)/'   # host
+docker exec dagu-worker-1 opencode models | grep -E '^(deepseek|openrouter)/'
+docker exec dagu-worker-1 opencode auth list
+```
+
+If the model from `agent.yaml` appears on the host but not in the worker, that is
+the failure. `opencode auth list` shows why: providers logged in with
+`opencode auth login` sit in `auth.json` (which is mounted), while a provider
+authenticated only through an environment variable — DeepSeek's
+`DEEPSEEK_API_KEY` is the usual case — exists only on the host. Dagu steps do not
+inherit worker environment variables, so adding the key to `compose.yaml` does
+not fix it.
+
+The fix is to put the login in `auth.json` so it rides the existing mount:
+
+```bash
+opencode auth login -p deepseek
+# or add {"deepseek":{"type":"api","key":"..."}} to ~/.local/share/opencode/auth.json by hand
+```
+
+No worker restart is needed — the `auth.json` bind mount is live. Confirm with
+
+```bash
+printf 'Reply with exactly OK' | docker exec -i dagu-worker-1 \
+  opencode run --format json --auto --model deepseek/deepseek-v4-pro
+```
+
+A working model streams tokens and ends `OK`; a broken one returns the
+`UnknownError` JSON at once. Any `provider/model` in `agent.yaml` must be a
+provider present in `auth.json`, not one that only an environment variable
+provides.
 
 ## Unsticking a killed run
 
