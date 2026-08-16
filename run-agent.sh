@@ -12,6 +12,11 @@ prompt_file=$1
 budget_usd=$2
 stream_file=$3
 tier=${4:-standard}
+# Optional session id to continue rather than start fresh. Only opencode honours
+# it today -- codex and claude have their own resume flags, not wired here. The
+# fix loop passes the id its first attempt returned so the next attempt reuses
+# the cached context instead of re-reading the diff, conventions and standards.
+continue_session=${5:-}
 
 case "$tier" in
   fast|standard|deep) ;;
@@ -127,12 +132,14 @@ case "$agent" in
     [ -n "$model" ] && args+=(--model "$model")
     variant=$(setting "variant_opencode_${tier}")
     [ -n "$variant" ] && args+=(--variant "$variant")
+    [ -n "$continue_session" ] && args+=(--session "$continue_session")
 
     # opencode has no spend cap flag, so $budget_usd is accepted and ignored --
     # same as codex. Say so in the log rather than printing a budget the run is
     # not actually held to.
     printf 'agent: opencode  tier: %s  model: %s  variant: %s  budget: not enforced\n' \
       "$tier" "$model_shown" "${variant:-<cli default>}"
+    [ -n "$continue_session" ] && printf 'continuing session %s\n' "$continue_session"
 
     # Prompt on stdin, not as a positional argument: `opencode run` accepts both,
     # but a phase prompt is thousands of words of markdown and putting it on the

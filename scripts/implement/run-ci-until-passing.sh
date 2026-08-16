@@ -33,6 +33,14 @@ stage=${8:-verify}
 
 here=$(cd "$(dirname "$0")" && pwd)
 
+# One agent session is reused across the fix attempts in this loop. The first
+# attempt starts fresh; the id it reports is passed to every later attempt, so
+# they continue instead of paying to re-read the diff, conventions and standards
+# the first attempt already loaded into context. If no id is recovered (the
+# agent wrote no stream, or it is not opencode), later attempts fall back to a
+# fresh session.
+session=""
+
 # Always `verify` as the label, whatever the stage: the log lands on
 # `<run-dir>/verify.log`, which is the path the fix-verify prompt names. Each
 # failed attempt is then copied aside, so the history of a long fight survives
@@ -66,7 +74,16 @@ while :; do
   # question. `set -e` would take the exit status as the script's own, so read it.
   status=0
   "$here/run-phase.sh" fix-verify "$run_dir" "$repo" "$workspace" "$skill" \
-    "$tier" "$budget" || status=$?
+    "$tier" "$budget" "$session" || status=$?
+
+  # Recover this attempt's session id so the next attempt continues it. The id is
+  # on the first line of the stream; a missing stream (opencode never started, or
+  # a different agent) leaves `session` empty and the next attempt starts fresh.
+  if [ -z "$session" ]; then
+    session=$(head -n 1 "$run_dir/fix-verify/agent-stream.jsonl" 2>/dev/null \
+      | jq -r '.sessionID // empty' 2>/dev/null || true)
+    [ -n "$session" ] && echo "[$stage] continuing session $session on the next attempt" >&2
+  fi
 
   # Keep the whole attempt: the next one overwrites every file in the phase
   # directory, and a run that ends up failing is usually diagnosed from the

@@ -1,11 +1,15 @@
 #!/usr/bin/env sh
 # Run one agent phase of the implementation, end to end.
 #
-#   run-phase.sh <phase> <run-dir> <repo> <workspace> <skill> <tier> <budget-usd>
+#   run-phase.sh <phase> <run-dir> <repo> <workspace> <skill> <tier> <budget-usd> [session]
 #
 # Build the prompt, run the agent at the requested model tier, then enforce the
 # phase's exit contract. Three things that always happen together, so the DAG
 # spends one line per phase instead of nine and the phases stay visibly uniform.
+#
+# The optional trailing `session` is an agent session id to continue instead of
+# starting fresh. The fix loop uses it to keep one session across attempts, so a
+# re-run does not pay to re-read the diff and standards it already holds.
 #
 # The exit status is the phase's verdict: 0 done, 20 blocked, 1 failed. The agent
 # runner's own exit status is deliberately ignored -- what the agent left in
@@ -20,6 +24,7 @@ workspace=$4
 skill=$5
 tier=$6
 budget=$7
+continue_session=${8:-}
 here=$(cd "$(dirname "$0")" && pwd)
 project_dir=$(cd "$here/../.." && pwd)
 
@@ -36,7 +41,8 @@ date +%s > "$run_dir/$phase/started_at"
   "$run_dir/$phase/prompt.md" \
   "$budget" \
   "$run_dir/$phase/agent-stream.jsonl" \
-  "$tier" || echo "[$phase] agent exited non-zero; judging it by its result.json" >&2
+  "$tier" \
+  "$continue_session" || echo "[$phase] agent exited non-zero; judging it by its result.json" >&2
 
 date +%s > "$run_dir/$phase/ended_at"
 printf 'tier:     %s\nbudget:   $%s\n' "$tier" "$budget" > "$run_dir/$phase/plan"

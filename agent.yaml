@@ -29,22 +29,17 @@ effort_codex_deep: high
 
 # opencode names a model as `provider/model`. Unlike the two agents above, these
 # tiers are pinned rather than left at `default`, because `default` is not safe
-# here: with no --model flag opencode picks a model itself, and in the worker
-# that resolved to a DeepSeek model routed through OpenRouter, whose endpoints do
-# not offer tool calling at all. Every phase is nothing but tool calls, so the
-# run died on its first turn with "No endpoints found that support tool use".
+# here: with no --model flag opencode picks a model itself, which is not
+# reproducible across the host and worker logins.
 #
-# The provider prefix is load-bearing: `deepseek/` is the DeepSeek API direct,
-# which does support tools; `openrouter/deepseek/` is the same model through a
-# route that does not. Naming the direct provider is what fixes this.
-#
-# Direct DeepSeek is currently the only provider in the opencode login that
-# works: the `anthropic/` entry returns 401, and the OpenRouter account is out of
-# credits. Re-point these if that changes -- `opencode models` lists what is
-# reachable.
-model_opencode_fast: deepseek/deepseek-v4-flash
-model_opencode_standard: deepseek/deepseek-v4-pro
-model_opencode_deep: deepseek/deepseek-v4-pro
+# Every phase is nothing but tool calls, so each pinned model must report
+# `toolcall: true` (`opencode models --verbose`). The `openrouter/` prefix is
+# load-bearing: it is the current login, and it routes to the same models the
+# direct `deepseek/`, `upstage/` and `openai/` providers served. Re-point these
+# if the login changes -- `opencode models` lists what is reachable.
+model_opencode_fast: openrouter/upstage/solar-pro4
+model_opencode_standard: openrouter/deepseek/deepseek-v4-flash-0731
+model_opencode_deep: openrouter/openai/gpt-5.6-luna-pro
 
 # opencode's second axis is `--variant`, the provider-specific reasoning effort
 # (`minimal`, `high`, `max`, ... -- the accepted values depend on the model). It

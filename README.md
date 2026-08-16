@@ -45,6 +45,78 @@ Only Claude Code enforces the per-phase spend cap the DAGs pass in; codex and
 opencode have no such flag, so for those two the cap is recorded in the run log
 and in the usage table but nothing holds the run to it.
 
+## Setup on a new machine
+
+Order matters: credentials land before `make up` reads them.
+
+### Prerequisites (host)
+
+```bash
+brew install gh dagu   # gh for the token and issue/label ops; dagu for `make validate`
+gh auth login          # host GitHub token, read by `make up`
+```
+
+Docker (Desktop or `brew` + colima) with the Compose plugin must already be
+running.
+
+### 1. Point it at the target repository
+
+Edit `project.env`:
+
+```ini
+PROJECT_REPO=owner/repo
+PROJECT_WORKSPACE=/absolute/path/to/target/repo
+```
+
+Then fix the hardcoded absolute mounts in `compose.yaml` — the project directory,
+the target repository, the worktrees directory, and the dotfiles line are all
+`/Users/lexuancuong/...`. Keep them absolute and identical inside the container:
+the DAG definitions refer to these paths.
+
+### 2. Coding-agent credential
+
+Choose the agent in `agent.yaml` (`agent: opencode` etc.), then authenticate that
+CLI **on the host** so its credential file rides the existing mount:
+
+- **opencode**: `opencode auth login -p openrouter` writes
+  `~/.local/share/opencode/auth.json` (mounted). The
+  `~/.config/opencode/opencode.jsonc` provider pins for discounted OpenRouter
+  routing ride the `:ro` config mount; copy that file over too.
+- **codex**: `codex login` writes `~/.codex/auth.json` (mounted).
+- **claude**: the macOS login lives in the Keychain, invisible to Linux, so
+  generate a separate token and store it where `run-agent.sh` looks:
+
+  ```bash
+  claude setup-token          # in your own terminal, not inside a Claude session
+  scripts/set-agent-token.sh  # paste the token (hidden input) → .secrets/claude-oauth-token
+  ```
+
+### 3. Model tiers
+
+Set the three tiers in `agent.yaml` (fast/standard/deep). For opencode, keep the
+`openrouter/` prefix and confirm each model reports tool support with
+`opencode models --verbose` — every phase is nothing but tool calls.
+
+### 4. Start and verify
+
+```bash
+make up        # build and start dagu + worker in Docker
+make labels    # create the agent:* labels on the repo
+make health    # prove the worker is reachable, tooled and logged in
+```
+
+`make health` fails on the exact broken step, each of which checks one thing:
+`tools` (the binaries), `github_auth`, and `agent_auth`.
+
+Caveats:
+
+- `make up` reads `gh auth token`, so `gh` must be authenticated first; the
+  worker materializes it into a Linux-local `gh` config at startup.
+- `~/.config/opencode` is mounted read-only; provider pins ride it live, no
+  restart. `auth.json` mounts are writable because tokens refresh in place.
+- `~/.ssh` is mounted read-only — the host needs the target repo's SSH access
+  before the first run.
+
 ## Start it
 
 ```bash
@@ -528,10 +600,15 @@ project configuration. Then run `make labels` for the target repo.
   itself. `summarize_run_usage` is how a regression in any of that gets noticed:
   it prints tokens, duration and command count per phase, and the same table is
   folded into the issue comment.
-- **Two implementations at a time.** Each `implement-clarified-task` run claims
-  one issue and exposes its full processing sequence as top-level DAG steps.
-  Scheduled runs use the `implementation` queue, whose service-level
-  `max_concurrency` is 2; `overlap_policy: all` lets another tick claim a
+  The fix loop also reuses one agent session across its attempts: the first
+  attempt's session id is passed back into the next, so it does not pay again to
+  re-read the diff, conventions and standards it already loaded. That is the one
+  place a session is continued — every phase boundary still starts fresh, so a
+  single phase stays re-runnable on its own and the review keeps fresh eyes.
+- **Several implementations at a time.** Each `implement-clarified-task` run
+  claims one issue and exposes its full processing sequence as top-level DAG
+  steps. Scheduled runs use the `implementation` queue, whose service-level
+  `max_concurrency` is 4; `overlap_policy: all` lets another tick claim a
   different ready issue while the first run is active. Each run works in its
   own git worktree, and the target repo's `make test-ci` stack is
   namespaced per checkout (`swc-test-<hash>`) and publishes no host ports, which

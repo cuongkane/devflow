@@ -1,7 +1,13 @@
 # Service-level concurrency. Implementation runs are flat, one issue per run;
-# this queue permits two such runs to execute at the same time.
+# this queue permits several such runs to execute at the same time.
+#
+# Each run is isolated: its worktree, run directory and branch are keyed by issue
+# number, and the claim step stops a loser so two runs never build the same issue.
+# The ceiling is a resource limit, not a correctness one -- every concurrent run
+# drives the target repository's Docker test stack and its own deep-model calls.
+# Raise it when the host has headroom; lower it when builds start contending.
 queues:
   enabled: true
   config:
     - name: implementation
-      max_concurrency: 2
+      max_concurrency: 4
