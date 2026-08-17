@@ -6,6 +6,11 @@
 # Host-side dagu CLI reads this project rather than ~/.config/dagu.
 export DAGU_HOME := $(CURDIR)
 
+# DAG definitions expand ${DAGU_ROOT} to locate their own scripts and prompts,
+# so it must be in the environment of anything that parses them: this Makefile
+# for host-side `dagu start`, and the containers in compose.yaml.
+export DAGU_ROOT := $(CURDIR)
+
 include project.env
 
 REPO      ?= $(PROJECT_REPO)

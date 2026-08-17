@@ -6,7 +6,7 @@ overlap_policy: skip
 worker_selector:
   host: "true"
 
-dotenv: /Users/lexuancuong/CUONG/DAGU/project.env
+dotenv: ${DAGU_ROOT}/project.env
 
 params:
   - name: ISSUE_NUMBER
@@ -27,9 +27,9 @@ params:
 # re-triggering it every ten minutes forever.
 
 consts:
-  - scripts_dir: /Users/lexuancuong/CUONG/DAGU/scripts
-  - prompts_dir: /Users/lexuancuong/CUONG/DAGU/prompts
-  - agent_runner: /Users/lexuancuong/CUONG/DAGU/run-agent.sh
+  - scripts_dir: ${DAGU_ROOT}/scripts
+  - prompts_dir: ${DAGU_ROOT}/prompts
+  - agent_runner: ${DAGU_ROOT}/run-agent.sh
   - budget_usd: "8"
 
 env:
@@ -158,6 +158,7 @@ steps:
       sed -e "s|{{SKILL}}|${env.REVIEW_SKILL}|g" \
           -e "s|{{REPO}}|${env.PROJECT_REPO}|g" \
           -e "s|{{WORKSPACE}}|${env.PROJECT_WORKSPACE}|g" \
+          -e "s|{{WORKTREES_DIR}}|${env.PROJECT_WORKSPACE}-worktrees|g" \
           -e "s|{{ISSUE_NUMBER}}|${ISSUE_NUMBER}|g" \
           -e "s|{{PR_NUMBER}}|${PR_NUMBER}|g" \
           -e "s|{{HEAD_REF}}|$head_ref|g" \

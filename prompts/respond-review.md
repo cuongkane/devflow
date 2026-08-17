@@ -32,7 +32,7 @@ have reclaimed it — create one and do not touch the main checkout:
 
 ```bash
 git -C {{WORKSPACE}} worktree add \
-  /Users/lexuancuong/CUONG/SWC-worktrees/<slug> {{HEAD_REF}}
+  {{WORKTREES_DIR}}/<slug> {{HEAD_REF}}
 ```
 
 Fetch first so the local branch matches what the reviewer actually read. If the

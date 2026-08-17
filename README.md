@@ -61,17 +61,30 @@ running.
 
 ### 1. Point it at the target repository
 
-Edit `project.env`:
+Copy `.env.example` to `.env` and fill in the four absolute paths for this
+machine — this repository's own path, the target repository, the worktrees
+directory it creates worktrees under, and the dotfiles checkout:
+
+```ini
+DAGU_ROOT=/absolute/path/to/DAGU
+PROJECT_WORKSPACE=/absolute/path/to/target/repo
+PROJECT_WORKTREES_DIR=/absolute/path/to/target/repo-worktrees
+DOTFILES_DIR=/absolute/path/to/dotfiles
+```
+
+`.env` is gitignored, read automatically by `docker compose`, and exported by
+the Makefile for host-side `dagu` commands — `compose.yaml` and the DAG
+definitions under `dags/` need no per-host edits.
+
+Then edit `project.env`:
 
 ```ini
 PROJECT_REPO=owner/repo
 PROJECT_WORKSPACE=/absolute/path/to/target/repo
 ```
 
-Then fix the hardcoded absolute mounts in `compose.yaml` — the project directory,
-the target repository, the worktrees directory, and the dotfiles line are all
-`/Users/lexuancuong/...`. Keep them absolute and identical inside the container:
-the DAG definitions refer to these paths.
+`PROJECT_WORKSPACE` is repeated here because `project.env` is a plain dotenv
+file with no variable expansion of its own — keep the two values identical.
 
 ### 2. Coding-agent credential
 
@@ -306,7 +319,7 @@ scripts/implement/summarize-run.sh       tokens and duration, phase by phase
 scripts/implement/finalize-openspec-change.sh
                                          sync the specs, then archive the change
 scripts/implement/archive-change.sh      openspec archive --yes, then validate
-scripts/implement/ship-code.sh           write the description, then open the PR
+scripts/implement/ship-code.sh           assemble a minimal PR body, then open the PR
 scripts/implement/open-pull-request.sh   verify origin, commit, push, gh pr create
 scripts/implement/report-and-recover.sh  report the outcome, then never leave the
                                          issue on agent:implementing
@@ -346,7 +359,7 @@ It is now the skill's own phases, one step each:
 | `resolve_review_comment` | agent | **deep** | 3 | 60m |
 | `finalize_openspec_change` | agent + shell | fast | 1 | 25m |
 | `run_ci_before_ship` | shell + agent | standard | 2 × 1 | 2h |
-| `ship_code` | agent + shell | fast | 1 | 30m |
+| `ship_code` | shell | — | — | — |
 | `summarize_run_usage` | shell | — | — | — |
 | `report_run_outcome` | shell | — | — | — |
 
@@ -583,8 +596,8 @@ project configuration. Then run `make labels` for the target repo.
   none of them merges anything, and the closer only acts on a pull request
   GitHub reports as already merged. `--max-budget-usd` caps spend, not blast
   radius: 4 for clarify, 8 for respond, and a per-phase budget for implement
-  (1 explore, 2 propose, 5 code, 4 tests, 3 review, 3 resolve-review, 1 sync,
-  1 write-up) totalling 20 when nothing has to be fixed. The two fix loops are on
+  (1 explore, 2 propose, 5 code, 4 tests, 3 review, 3 resolve-review, 1 sync)
+  totalling 19 when nothing has to be fixed. The two fix loops are on
   top of that at 2 per attempt — up to 4 in `run_ci_until_passing` and 2 in
   `run_ci_before_ship` — so 26 is the worst case.
   Splitting implementation into phases means several fresh agents re-read the

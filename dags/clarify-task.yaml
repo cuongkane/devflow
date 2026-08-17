@@ -7,7 +7,7 @@ max_output_size: 10485760
 worker_selector:
   host: "true"
 
-dotenv: /Users/lexuancuong/CUONG/DAGU/project.env
+dotenv: ${DAGU_ROOT}/project.env
 
 params:
   - name: ISSUE_NUMBER
@@ -16,9 +16,9 @@ params:
     description: Optional issue to claim immediately instead of polling the queue
 
 consts:
-  - prompts_dir: /Users/lexuancuong/CUONG/DAGU/prompts
-  - scripts_dir: /Users/lexuancuong/CUONG/DAGU/scripts
-  - agent_runner: /Users/lexuancuong/CUONG/DAGU/run-agent.sh
+  - prompts_dir: ${DAGU_ROOT}/prompts
+  - scripts_dir: ${DAGU_ROOT}/scripts
+  - agent_runner: ${DAGU_ROOT}/run-agent.sh
   - budget_usd: "4"
 
 steps:

@@ -1,38 +1,42 @@
 #!/usr/bin/env sh
-# Write the pull request description, then commit, push and open the pull request.
+# Commit, push, and open the pull request -- no agent, no re-reading the diff.
 #
-#   ship-code.sh <repo> <run-dir> <workspace> <skill> [<tier>] [<budget-usd>]
+#   ship-code.sh <repo> <run-dir>
 #
-# One step: the description exists only to be the body of the pull request opened
-# immediately after it, and neither half has any use on its own. What stays split
-# is the kind of work -- the agent writes the prose, shell decides where the code
-# actually goes -- which is a division inside this script rather than in the graph.
+# The pull request body used to be written by an agent phase that re-read the
+# whole diff and the archived artifacts before writing prose, which made the
+# cheapest phase in the pipeline one of the most expensive. Everything that body
+# described is already on disk as shell-produced files, so it is assembled from
+# those instead: the issue title as the summary, the OpenSpec change name, and
+# the verification summary as the evidence of what passed.
 #
-# A missing or empty pr-body.md is open-pull-request.sh's own precondition, so a
-# description phase that finished but produced nothing stops the push there,
-# where the check already lives, rather than being re-checked here.
-#
-# Exit status: the phase contract -- 0 done, 20 blocked, 1 failed.
+# Nothing is checked or verified here -- the suite that passed ran against this
+# exact tree in the previous step. `open-pull-request.sh` does the commit, push
+# and `gh pr create`; this script only owns the prose the PR is opened with.
 set -eu
 
 repo=$1
 run_dir=$2
-workspace=$3
-skill=$4
-tier=${5:-fast}
-budget=${6:-1}
-
 here=$(cd "$(dirname "$0")" && pwd)
 
-# `blocked` has to survive as 20 all the way up to the DAG, and nothing should be
-# pushed on the strength of a phase that did not finish.
-status=0
-"$here/run-phase.sh" pr-body "$run_dir" "$repo" "$workspace" "$skill" \
-  "$tier" "$budget" || status=$?
+title=$("$here/state.sh" get "$run_dir" title)
+issue=$("$here/state.sh" get "$run_dir" issue)
+change=$("$here/state.sh" get "$run_dir" change)
 
-if [ "$status" -ne 0 ]; then
-  echo "[ship] the pr-body phase did not finish; not pushing" >&2
-  exit "$status"
-fi
+body="$run_dir/pr-body.md"
+
+{
+  printf '## Summary\n\n%s\n' "$title"
+  printf '\nCloses #%s\n' "$issue"
+  printf '\n## OpenSpec\n\nChange: `%s`\n' "$change"
+  printf '\n## Verification\n\n'
+  if [ -s "$run_dir/verify.summary.log" ]; then
+    printf '```\n'
+    cat "$run_dir/verify.summary.log"
+    printf '```\n'
+  else
+    printf 'All checks passed.\n'
+  fi
+} > "$body"
 
 exec "$here/open-pull-request.sh" "$repo" "$run_dir"

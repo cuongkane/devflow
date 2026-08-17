@@ -76,12 +76,18 @@ services:
       GH_TOKEN: ${GH_TOKEN:-}
       DAGU_HOME: /var/lib/dagu
       DAGU_TZ: Asia/Ho_Chi_Minh
+      # The DAG definitions expand ${DAGU_ROOT} to find their own scripts and
+      # prompts. Set in .env, and must match the host path used below so the
+      # in-container path is identical to the one the DAGs refer to.
+      DAGU_ROOT: ${DAGU_ROOT}
     volumes:
       # Project files. Keep the host paths unchanged inside the worker because
       # the DAGs and Docker-backed test commands refer to these absolute paths.
-      - /Users/lexuancuong/CUONG/DAGU:/Users/lexuancuong/CUONG/DAGU
-      - /Users/lexuancuong/CUONG/SWC:/Users/lexuancuong/CUONG/SWC
-      - /Users/lexuancuong/CUONG/SWC-worktrees:/Users/lexuancuong/CUONG/SWC-worktrees
+      # DAGU_ROOT, PROJECT_WORKSPACE and PROJECT_WORKTREES_DIR come from .env
+      # (see .env.example) so this file needs no per-host edits.
+      - ${DAGU_ROOT}:${DAGU_ROOT}
+      - ${PROJECT_WORKSPACE}:${PROJECT_WORKSPACE}
+      - ${PROJECT_WORKTREES_DIR}:${PROJECT_WORKTREES_DIR}
       - /tmp/dagu-agent:/tmp/dagu-agent
 
       # Authentication and agent extensions. Credential files are writable so
@@ -91,7 +97,7 @@ services:
       - ${HOME}/.codex/skills:/root/.codex/skills:ro
       - ${HOME}/.codex/plugins:/root/.codex/plugins:ro
       # The configured SweatCharge skills are symlinks into this repository.
-      - /Users/lexuancuong/PP/dotfiles:/Users/lexuancuong/PP/dotfiles:ro
+      - ${DOTFILES_DIR}:${DOTFILES_DIR}:ro
       # No ~/.claude/.credentials.json mount, unlike the codex one above: macOS
       # Claude Code keeps its credentials in the Keychain, so that path holds
       # nothing to mount -- and naming a source that does not exist makes Docker

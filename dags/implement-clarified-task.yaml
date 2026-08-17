@@ -29,7 +29,7 @@ max_output_size: 10485760
 worker_selector:
   host: "true"
 
-dotenv: /Users/lexuancuong/CUONG/DAGU/project.env
+dotenv: ${DAGU_ROOT}/project.env
 
 params:
   - name: ISSUE_NUMBER
@@ -38,7 +38,7 @@ params:
     description: Optional issue to claim immediately instead of polling the queue
 
 consts:
-  - impl: /Users/lexuancuong/CUONG/DAGU/scripts/implement
+  - impl: ${DAGU_ROOT}/scripts/implement
   - run_dir_root: /tmp/dagu-agent
 
 steps:
@@ -272,22 +272,21 @@ steps:
       "${env.PROJECT_REPO}" "${env.PROJECT_WORKSPACE}" "${env.IMPLEMENT_SKILL}"
       2 standard 2 final
 
-  # Likewise one step: the description exists only to be the body of the pull
-  # request opened straight after it. The agent writes the prose, shell decides
-  # where the code actually goes.
+  # One step, and no agent: the pull request body is assembled from files already
+  # on disk (issue title, change name, verification summary), then the branch is
+  # committed, pushed and the pull request opened. Nothing is checked or verified
+  # here -- the suite that passed ran against this exact tree in the step before.
   - id: ship_code
     depends: run_ci_before_ship
     preconditions: *claimed
     working_dir: ${env.PROJECT_WORKSPACE}
-    timeout_sec: 1800          # the description and the push
+    timeout_sec: 1800          # the commit and the push
     retry_policy: *no_retry
     continue_on: *carry_on
     run: >
       ${consts.impl}/ship-code.sh
       "${env.PROJECT_REPO}"
       "${consts.run_dir_root}/${claim_ready_issue.output.issue_number}/implement"
-      "${env.PROJECT_WORKSPACE}" "${env.IMPLEMENT_SKILL}"
-      fast 1
 
   # --------------------------------------------------------------- report ----
   # What the run cost, phase by phase: tokens in and out, how much of the input

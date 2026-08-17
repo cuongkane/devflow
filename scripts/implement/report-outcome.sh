@@ -58,11 +58,12 @@ case "$outcome" in
         ;;
       *)
         [ -s "$body" ] || {
-          # The write-up phase is the last agent step, so it is the one most
-          # likely to have been cut off by the budget. Its absence should not
-          # turn a delivered pull request into a reported failure.
+          # Ship no longer runs an agent write-up phase, so a completed run has
+          # no report.md unless a human produced one; a missing file is normal,
+          # not a failure, and must not turn a delivered pull request into a
+          # reported failure.
           printf 'Opened %s for this issue.\n' "$pr_url" > "$body"
-          echo "[report] no agent-written report.md; posting a minimal one" >&2
+          echo "[report] no report.md; posting a minimal one" >&2
         }
         # This marker is how the delivery poller finds the pull request. It is
         # written here from GitHub's own URL rather than by the agent -- the one
