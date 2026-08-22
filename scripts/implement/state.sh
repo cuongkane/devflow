@@ -2,6 +2,7 @@
 # Read and write the run's shared state file.
 #
 #   state.sh get <run-dir> <field>
+#   state.sh get-or <run-dir> <field> <default>
 #   state.sh set <run-dir> <field> <value>
 #   state.sh phase <run-dir> <phase-name>
 #
@@ -24,6 +25,17 @@ case "$verb" in
   get)
     jq -er --arg f "$3" '.[$f]' "$file"
     ;;
+  get-or)
+    # For a field that a later change introduced. `get` is deliberately strict --
+    # a missing branch or worktree is a bug and must stop the phase before it
+    # writes to the wrong tree -- so an optional field asks for this instead and
+    # names its own default. `size` is the case: a run directory left behind by
+    # an earlier version of this pipeline does not have one, and neither does a
+    # `make phase` re-run against such a directory.
+    jq -r --arg f "$3" --arg d "$4" \
+      'if (.[$f] // "") == "" then $d else .[$f] end' "$file" 2>/dev/null \
+      || printf '%s\n' "$4"
+    ;;
   set|phase)
     [ "$verb" = phase ] && field=phase || field=$3
     [ "$verb" = phase ] && value=$3 || value=$4
@@ -38,7 +50,7 @@ case "$verb" in
     [ "$verb" = phase ] && echo "[state] phase: $value" >&2 || true
     ;;
   *)
-    echo "usage: state.sh get|set|phase <run-dir> ..." >&2
+    echo "usage: state.sh get|get-or|set|phase <run-dir> ..." >&2
     exit 2
     ;;
 esac

@@ -1,6 +1,12 @@
 # Service-level concurrency. Implementation runs are flat, one issue per run;
 # this queue permits several such runs to execute at the same time.
 #
+# Both implementation DAGs sit on this one queue, so the ceiling is shared between
+# them rather than doubled. That is the point: they poll on different minutes and
+# claim from different labels, but a long major run overlaps many minor ticks, and
+# every concurrent run of either flow drives the same Docker test stack on the
+# same host.
+#
 # Each run is isolated: its worktree, run directory and branch are keyed by issue
 # number, and the claim step stops a loser so two runs never build the same issue.
 # The ceiling is a resource limit, not a correctness one -- every concurrent run

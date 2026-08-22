@@ -1,9 +1,22 @@
 type: graph
-description: Claim and implement clarified GitHub issues, one visible phase at a time
+description: Claim and implement clarified major issues, one visible phase at a time
 schedule: "*/10 * * * *"
 overlap_policy: all
 queue: implementation
 max_output_size: 10485760
+
+# This is the major flow: an issue whose requirements are not settled until
+# something writes them down. It polls `agent:major-task:ready-to-implement`,
+# which the clarifier applies when it judges that building the issue introduces
+# new product meaning -- a new capability, a changed API contract, a migration,
+# anything touching authorization or money.
+#
+# Its counterpart is implement-minor-clarified-task.yaml, which polls the other
+# ready label and runs three agent phases instead of nine. A defect fix does not
+# need an exploration, a proposal, delta specs or an automated review, and giving
+# it all four is the waste that flow exists to avoid. The two share every script
+# in scripts/implement/ and diverge only in which phases they run and which
+# prompt each shared phase is given.
 
 # The implementation used to be a single agent step: one prompt, one two-hour
 # timeout, one $15 budget, and no way to tell from the run view whether it was
@@ -40,11 +53,14 @@ params:
 consts:
   - impl: ${DAGU_ROOT}/scripts/implement
   - run_dir_root: /tmp/dagu-agent
+  - queue_label: agent:major-task:ready-to-implement
 
 steps:
   # ---------------------------------------------------------------- claim ----
   - id: claim_ready_issue
-    run: ${consts.impl}/claim-ready-issue.sh "${env.PROJECT_REPO}" "${params.ISSUE_NUMBER}"
+    run: >
+      ${consts.impl}/claim-ready-issue.sh
+      "${env.PROJECT_REPO}" "${consts.queue_label}" "${params.ISSUE_NUMBER}"
     output:
       claimed:
         from: stdout
@@ -75,6 +91,7 @@ steps:
       "${consts.run_dir_root}/${claim_ready_issue.output.issue_number}/implement"
       "${env.PROJECT_WORKSPACE}"
       "${env.IMPLEMENT_SKILL}"
+      major
 
   - id: announce_start_on_issue
     depends: fetch_issue_brief
@@ -95,12 +112,35 @@ steps:
       "${env.PROJECT_WORKSPACE}"
       "${consts.run_dir_root}/${claim_ready_issue.output.issue_number}/implement"
 
+  # A git worktree shares the repository but not ignored files, so it never has
+  # `sweatcharge_fe/node_modules` however complete the human's own checkout is.
+  # Nothing used to install it -- run-verification.sh went straight to `yarn lint`
+  # -- so the first phase that wanted a frontend test improvised the install
+  # inside its own budget and timeout, and lost the phase when it stalled.
+  #
+  # Shell, and before the agents, so the cost is wall clock rather than model
+  # spend and a failure here says "the install broke" instead of "the tests phase
+  # broke". Unconditional: which files a run will touch is not known yet, and a
+  # warm cache makes this a minute. Idempotent, so re-running a phase by hand
+  # against an existing worktree costs one `test -f`.
+  - id: install_frontend_dependencies
+    depends: create_feature_worktree
+    preconditions: *claimed
+    timeout_sec: 2400          # a cold cache genuinely takes minutes
+    retry_policy:
+      limit: 1                 # unlike the agent phases: a fetch that died
+      interval_sec: 30         # halfway through is exactly worth one retry
+    continue_on: *carry_on
+    run: >
+      ${consts.impl}/install-frontend-deps.sh
+      "${consts.run_dir_root}/${claim_ready_issue.output.issue_number}/implement"
+
   # ------------------------------------------------------- the agent work ----
   # run-phase.sh builds the prompt, runs the agent at the given model tier, and
   # enforces that phase's exit contract. Tier and budget are the two numbers worth
   # tuning per phase; they are here rather than buried in a script for that reason.
   - id: explore_codebase_context
-    depends: create_feature_worktree
+    depends: install_frontend_dependencies
     preconditions: *claimed
     working_dir: ${env.PROJECT_WORKSPACE}
     timeout_sec: 900

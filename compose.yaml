@@ -90,6 +90,18 @@ services:
       - ${PROJECT_WORKTREES_DIR}:${PROJECT_WORKTREES_DIR}
       - /tmp/dagu-agent:/tmp/dagu-agent
 
+      # Yarn Berry's global cache, on a named volume so it survives the image
+      # being rebuilt. sweatcharge_fe pins yarn 4 and leaves `enableGlobalCache`
+      # at its default, so every install in every worktree reads and writes this
+      # one directory. Without the volume it lives on the container's writable
+      # layer and `make up --build` throws it away -- and the next frontend run
+      # re-fetches the whole Angular tree, which is what made a cold
+      # `yarn install` stall for minutes inside an agent phase's budget and take
+      # the phase down with it. A git worktree never has node_modules, so this is
+      # paid on every run; the volume is what makes it a warm minute rather than
+      # a cold several.
+      - yarn-cache:/root/.yarn/berry/cache
+
       # Authentication and agent extensions. Credential files are writable so
       # their CLIs can refresh tokens; configuration and skills are read-only.
       - ${HOME}/.codex/auth.json:/root/.codex/auth.json
@@ -120,3 +132,9 @@ services:
       # The implementation agent runs the target repository's Docker test stack.
       - /var/run/docker.sock:/var/run/docker.sock
     restart: unless-stopped
+
+volumes:
+  # Survives `make up --build`. Delete it with
+  # `docker volume rm dagu_yarn-cache` if a cache entry is ever corrupted -- the
+  # next run repopulates it, slowly, and nothing else depends on its contents.
+  yarn-cache:

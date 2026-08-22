@@ -1,7 +1,7 @@
 .DEFAULT_GOAL := help
 .PHONY: help up down restart logs ps open worker validate health state \
-        clarify implement phase verify usage respond close labels labels-prune \
-        clean
+        clarify implement implement-minor phase verify usage respond close \
+        labels labels-prune clean
 
 # Host-side dagu CLI reads this project rather than ~/.config/dagu.
 export DAGU_HOME := $(CURDIR)
@@ -16,7 +16,11 @@ include project.env
 REPO      ?= $(PROJECT_REPO)
 
 # Every label in the state machine, in lifecycle order. `state` walks this list.
-STATES := agent:todo agent:clarifying agent:revising agent:ready-to-implement \
+# Clarification forks here: it sizes the work and promotes an issue to one of the
+# two ready labels, which the two implementation DAGs poll one each. Everything
+# downstream of agent:implementing is shared and cannot tell the flows apart.
+STATES := agent:todo agent:clarifying agent:revising \
+          agent:major-task:ready-to-implement agent:minor-task:ready-to-implement \
           agent:implementing agent:reviewing agent:responding agent:finished agent:failed
 
 help: ## Show this help
@@ -82,9 +86,17 @@ clarify: ## Clarify one issue now: make clarify ISSUE=42
 	@test -n "$(ISSUE)" || { echo "usage: make clarify ISSUE=<number>"; exit 1; }
 	dagu start dags/clarify-task.yaml -- ISSUE_NUMBER=$(ISSUE)
 
-implement: ## Implement one issue now: make implement ISSUE=42
+implement: ## Implement one major issue now: make implement ISSUE=42
 	@test -n "$(ISSUE)" || { echo "usage: make implement ISSUE=<number>"; exit 1; }
 	dagu start dags/implement-clarified-task.yaml -- ISSUE_NUMBER=$(ISSUE)
+
+# The two flows claim from different labels, so the target has to match the label
+# the clarifier applied. Running the wrong one is safe: the guarded claim finds
+# the issue is not on the queue it expected, prints what it is actually carrying,
+# and stops without touching it.
+implement-minor: ## Implement one minor issue now: make implement-minor ISSUE=42
+	@test -n "$(ISSUE)" || { echo "usage: make implement-minor ISSUE=<number>"; exit 1; }
+	dagu start dags/implement-minor-clarified-task.yaml -- ISSUE_NUMBER=$(ISSUE)
 
 phase: ## Re-run one implementation phase: make phase ISSUE=42 PHASE=review
 	@test -n "$(ISSUE)" -a -n "$(PHASE)" \
@@ -125,8 +137,10 @@ labels: ## Create the agent:* labels on $(REPO) (idempotent)
 		--description "The clarifier is reading this"
 	@gh label create "agent:revising"           --repo $(REPO) --color D93F0B --force \
 		--description "Waiting on you: answer the questions, then relabel agent:todo"
-	@gh label create "agent:ready-to-implement" --repo $(REPO) --color 1D76DB --force \
-		--description "Clarified. Queued for the implementer"
+	@gh label create "agent:major-task:ready-to-implement" --repo $(REPO) --color 1D76DB --force \
+		--description "Clarified, needs a specification. Queued for the major implementer"
+	@gh label create "agent:minor-task:ready-to-implement" --repo $(REPO) --color 0366D6 --force \
+		--description "Clarified, requirements already settled. Queued for the minor implementer"
 	@gh label create "agent:implementing"       --repo $(REPO) --color FBCA04 --force \
 		--description "The implementer is building this"
 	@gh label create "agent:reviewing"          --repo $(REPO) --color 5319E7 --force \
@@ -138,11 +152,14 @@ labels: ## Create the agent:* labels on $(REPO) (idempotent)
 	@gh label create "agent:failed"             --repo $(REPO) --color B60205 --force \
 		--description "A run broke; the comment says where"
 
-labels-prune: ## Delete the labels retired in the agent-per-phase refactor
-	@echo "This removes agent:in-progress, agent:done and agent:needs-input from $(REPO),"
-	@echo "including from any issue still carrying them. Ctrl-C within 5s to abort."
+labels-prune: ## Delete retired labels (agent-per-phase refactor, major/minor split)
+	@echo "This removes agent:in-progress, agent:done, agent:needs-input and"
+	@echo "agent:ready-to-implement from $(REPO), including from any issue still"
+	@echo "carrying them. Relabel anything still queued on agent:ready-to-implement"
+	@echo "as agent:major-task:ready-to-implement FIRST -- pruning it drops the issue"
+	@echo "out of every queue. Ctrl-C within 5s to abort."
 	@sleep 5
-	@for l in agent:in-progress agent:done agent:needs-input; do \
+	@for l in agent:in-progress agent:done agent:needs-input agent:ready-to-implement; do \
 		gh label delete "$$l" --repo $(REPO) --yes 2>/dev/null && echo "deleted $$l" \
 			|| echo "$$l not present"; \
 	done

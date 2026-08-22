@@ -1,7 +1,15 @@
 #!/usr/bin/env sh
 # Fetch the issue, derive the run's identity, and build the brief the agent reads.
 #
-#   fetch-issue-brief.sh <repo> <issue> <run-dir> <workspace> <skill>
+#   fetch-issue-brief.sh <repo> <issue> <run-dir> <workspace> <skill> [<size>]
+#
+# `size` is `major` or `minor` -- which of the two implementation DAGs claimed
+# this issue, decided by the clarifier and carried on the issue's ready label. It
+# is recorded in state.json because the phases themselves have to know: a minor
+# run has no OpenSpec change, so build-prompt.sh gives it a different prompt for
+# the phases it shares with the major flow, and ship-code.sh has no change name
+# to put in the pull request body. It defaults to `major`, the full pipeline,
+# because that is the answer that is merely expensive rather than wrong.
 #
 # This is where the run stops being anonymous. Previously the agent invented the
 # slug, the branch name, the worktree path and the OpenSpec change name inside a
@@ -20,6 +28,8 @@ issue=$2
 run_dir=$3
 workspace=$4
 skill=$5
+size=${6:-major}
+[ "$size" = minor ] || size=major
 
 mkdir -p "$run_dir"
 rm -f "$run_dir/result.json" "$run_dir/report.md"
@@ -56,13 +66,19 @@ if [ -z "$base" ]; then
   fi
 fi
 
+# `change` is written on both paths even though a minor run never creates the
+# change directory. It stays because it is derived from the slug and costs
+# nothing, and because a phase that reads it and finds nothing on disk is a
+# clearer failure than one that reads an absent field. What tells the phases
+# which world they are in is `size`, not the presence of `change`.
 jq -n \
   --arg issue "$issue" --arg title "$title" --arg slug "$slug" \
   --arg branch "feature/$name" \
   --arg worktree "$workspace-worktrees/$name" \
-  --arg change "$slug" --arg base "$base" \
+  --arg change "$slug" --arg base "$base" --arg size "$size" \
   '{issue: $issue, title: $title, slug: $slug, branch: $branch,
-    worktree: $worktree, change: $change, base: $base, phase: "fetch_issue_brief"}' \
+    worktree: $worktree, change: $change, base: $base, size: $size,
+    phase: "fetch_issue_brief"}' \
   > "$run_dir/state.json"
 
 # Stdout, not stderr: dagu shows the stdout log in the UI, and a run with none
@@ -73,6 +89,7 @@ printf 'issue:    #%s\n' "$issue"
 printf 'title:    %s\n' "$title"
 printf 'url:      https://github.com/%s/issues/%s\n' "$repo" "$issue"
 printf 'comments: %s\n' "$comments"
+printf 'size:     %s\n' "$size"
 printf 'skill:    %s\n' "$skill"
 printf 'run_dir:  %s\n' "$run_dir"
 printf 'branch:   feature/%s\n' "$name"

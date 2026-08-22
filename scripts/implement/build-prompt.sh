@@ -20,6 +20,16 @@
 # as a path; the agent reads it as data. The same holds for the branch diff and
 # the repository's conventions: shell produces the file, the prompt names the
 # path, and the phase spends one read instead of a discovery.
+#
+# There are two flows, and three of the phases are shared between them. A minor
+# run has no OpenSpec change, no exploration and no automated review, so the
+# shared phases cannot be given the same instructions: `prompts/implement/*.md`
+# is written for the major flow, and a minor run prefers
+# `prompts/implement/minor/<phase>.md` when one exists. A phase with no minor
+# variant -- `fix-verify` is the case -- gets the major prompt with `_minor.md`
+# appended, which is a short correction rather than a rewrite. Patching every
+# shared prompt with an addendum was the alternative, and it produced prompts
+# that spent a page arguing with themselves about which files exist.
 set -eu
 
 phase=$1
@@ -32,9 +42,6 @@ project_dir=$(cd "$(dirname "$0")/../.." && pwd)
 prompts_dir="$project_dir/prompts/implement"
 here=$(cd "$(dirname "$0")" && pwd)
 
-src="$prompts_dir/$phase.md"
-[ -f "$src" ] || { echo "[prompt] no such phase prompt: $src" >&2; exit 1; }
-
 out_dir="$run_dir/$phase"
 mkdir -p "$out_dir"
 
@@ -43,6 +50,26 @@ worktree=$("$here/state.sh" get "$run_dir" worktree)
 change=$("$here/state.sh" get "$run_dir" change)
 base=$("$here/state.sh" get "$run_dir" base)
 issue=$("$here/state.sh" get "$run_dir" issue)
+
+# Which flow claimed this issue. `get-or`, not `get`: a run directory left by an
+# earlier version of the pipeline has no such field, and `major` -- the full
+# pipeline, and what the unqualified prompts are written for -- is the answer
+# that is merely expensive rather than wrong.
+size=$("$here/state.sh" get-or "$run_dir" size major)
+[ "$size" = minor ] || size=major
+
+# The prompt for this phase, and the correction appended when there is no
+# purpose-written one for a minor run.
+src="$prompts_dir/$phase.md"
+addendum=""
+if [ "$size" = minor ]; then
+  if [ -f "$prompts_dir/minor/$phase.md" ]; then
+    src="$prompts_dir/minor/$phase.md"
+  else
+    addendum="$prompts_dir/_minor.md"
+  fi
+fi
+[ -f "$src" ] || { echo "[prompt] no such phase prompt: $src" >&2; exit 1; }
 
 # Which standards each phase is held to. A phase gets the standards it acts on:
 # `code` writes production code, `tests` writes tests, and the three phases that
@@ -71,7 +98,8 @@ esac
 # missing exactly the changes it was called in to fix.
 "$here/write-diff.sh" "$run_dir"
 
-cat "$prompts_dir/_preamble.md" "$src" "$out_dir/standards.md" \
+# shellcheck disable=SC2086  # $addendum is one optional path, empty when unused
+cat "$prompts_dir/_preamble.md" "$src" $addendum "$out_dir/standards.md" \
   | sed -e "s|{{SKILL}}|$skill|g" \
         -e "s|{{REPO}}|$repo|g" \
         -e "s|{{WORKSPACE}}|$workspace|g" \
@@ -102,6 +130,7 @@ rm -f "$out_dir/result.json"
 # history keeps it after /tmp has been cleared.
 printf 'prompt:   %s\n' "$out_dir/prompt.md"
 printf 'phase:    %s\n' "$phase"
+printf 'flow:     %s (%s)\n' "$size" "${src#"$prompts_dir/"}"
 printf '%s\n' "----------------------------- prompt begins -----------------------------"
 cat "$out_dir/prompt.md"
 printf '%s\n' "------------------------------ prompt ends ------------------------------"

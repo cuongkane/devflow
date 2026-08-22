@@ -1,8 +1,24 @@
 type: graph
-description: Pick and clarify a GitHub issue that is waiting for requirements
+description: Clarify a GitHub issue waiting for requirements, and size the work
 schedule: "*/5 * * * *"
 overlap_policy: skip
 max_output_size: 10485760
+
+# This DAG answers two questions, not one. The first is whether the issue can be
+# implemented unattended; the second, asked only when the answer is yes, is
+# whether building it needs a written specification.
+#
+# The second question is here because this is the only phase that has read the
+# requirements and not yet spent anything on the implementation. Sizing later
+# would mean either an extra agent run whose whole purpose is to discover that a
+# change is cheap, or a human applying a label by hand. Sizing here costs
+# nothing: the clarifier has already read the repository to write the brief.
+#
+# The answer leaves as one of two labels -- `agent:major-task:ready-to-implement`
+# or `agent:minor-task:ready-to-implement` -- and the two implementation DAGs
+# poll one each. Disjoint queues are what lets them be separate pollers: the
+# label is the lock in this system, and two DAGs watching one label would race
+# for the same issue on every tick.
 
 worker_selector:
   host: "true"
@@ -157,7 +173,24 @@ steps:
 
       case "$result_status" in
         ready)
-          state="agent:ready-to-implement"
+          # The size decides which implementation pipeline gets the issue, and
+          # the label is how it gets there: the two implementers poll one of
+          # these each, so the queues are disjoint and neither can claim the
+          # other's work. `major` is the fallback for anything unexpected --
+          # a missing field, a misspelling, an older clarifier that does not
+          # write one -- because the full pipeline on a small fix is merely
+          # expensive, while the short one on a real feature ships an
+          # unspecified change that no automated reviewer ever read.
+          size=$(jq -r '.size // ""' "$result" 2>/dev/null || echo "")
+          case "$size" in
+            minor) state="agent:minor-task:ready-to-implement" ;;
+            major) state="agent:major-task:ready-to-implement" ;;
+            *)
+              echo "[report] ready with size='$size'; routing to the major pipeline" >&2
+              size=major
+              state="agent:major-task:ready-to-implement"
+              ;;
+          esac
           # The marker is the handoff contract: the implementer reads the newest
           # comment carrying it and treats that as the brief, in preference to
           # the raw issue body.
@@ -202,6 +235,9 @@ steps:
       printf 'elapsed:    %dm%02ds\n' "$((elapsed / 60))" "$((elapsed % 60))"
       summary=$(jq -r '.summary // empty' "$result" 2>/dev/null || true)
       [ -z "$summary" ] || printf 'summary:    %s\n' "$summary"
+      if [ "$result_status" = ready ]; then
+        printf 'size:       %s\n' "$size"
+      fi
       if [ "$result_status" = needs-clarification ]; then
         questions=$(jq -r '.count // "unknown"' "$result" 2>/dev/null || echo unknown)
         printf 'questions:  %s\n' "$questions"

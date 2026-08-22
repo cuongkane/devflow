@@ -1,0 +1,260 @@
+type: graph
+description: Claim and implement clarified minor issues -- code, tests, verify, ship
+schedule: "5,15,25,35,45,55 * * * *"
+overlap_policy: all
+queue: implementation
+max_output_size: 10485760
+
+# The short flow. It exists because the major pipeline writes a specification
+# before it writes code -- an exploration, an OpenSpec proposal with delta specs
+# and a task list, an automated review, then a spec sync and an archive -- and
+# that is right for a feature and pure waste for a two-line UI defect. Nine agent
+# phases to correct a wrong label is not caution, it is spending.
+#
+# So this DAG is what is left when the specification work is removed: write the
+# fix, write its tests, run the repository's own checks until they pass, open the
+# pull request. Three agent phases against the major flow's nine, and the two
+# expensive ones drop from the deep model tier to standard, because a change whose
+# requirements are already settled does not need the model that designs.
+#
+# What it does NOT drop is the verification suite or the human. The target
+# repository's own commands still run from shell and their exit status is still
+# the gate; the pull request is still opened for review. What is gone is the
+# machinery that exists to decide *what* to build, on an issue where that was
+# already decided.
+#
+# Which issues arrive here is not this DAG's decision. The clarifier sizes the
+# work when it promotes the issue and applies one of two labels; this DAG polls
+# `agent:minor-task:ready-to-implement` and implement-clarified-task.yaml polls
+# the other. The queues are deliberately disjoint -- the label is the lock in this
+# system, so two DAGs watching one label would race for the same issue on every
+# tick. Both claim into the same `agent:implementing` working label, and both
+# hand their pull request to `agent:reviewing`, so everything downstream of here
+# is shared and cannot tell the two flows apart.
+#
+# `queue: implementation` is shared with the major DAG on purpose. The two poll on
+# different minutes but a long major run overlaps many minor ticks, and both build
+# worktrees and run full test suites on this one machine.
+#
+# Every script here is the same script the major flow calls. The divergence is
+# which phases run, which model tier each gets, and -- for the two shared agent
+# phases -- which prompt build-prompt.sh hands them: a minor run prefers
+# `prompts/implement/minor/<phase>.md`, which is written for a run with no
+# OpenSpec change, no exploration to read and no review after it.
+
+worker_selector:
+  host: "true"
+
+dotenv: ${DAGU_ROOT}/project.env
+
+params:
+  - name: ISSUE_NUMBER
+    type: string
+    default: ""
+    description: Optional issue to claim immediately instead of polling the queue
+
+consts:
+  - impl: ${DAGU_ROOT}/scripts/implement
+  - run_dir_root: /tmp/dagu-agent
+  - queue_label: agent:minor-task:ready-to-implement
+
+steps:
+  # ---------------------------------------------------------------- claim ----
+  - id: claim_ready_issue
+    run: >
+      ${consts.impl}/claim-ready-issue.sh
+      "${env.PROJECT_REPO}" "${consts.queue_label}" "${params.ISSUE_NUMBER}"
+    output:
+      claimed:
+        from: stdout
+        decode: json
+        select: .claimed
+      issue_number:
+        from: stdout
+        decode: json
+        select: .issue_number
+      message:
+        from: stdout
+        decode: json
+        select: .message
+
+  # Everything below is gated on the claim. An idle poll -- the common case, six
+  # times an hour -- costs one `gh` call and stops here.
+  #
+  # `minor` is the last argument: it is what fetch-issue-brief.sh records in
+  # state.json, and it is how the phases themselves find out which flow they are
+  # in. Nothing infers the flow from the DAG it is running under, because the
+  # scripts are shared and `make phase` can re-run any of them by hand.
+  - id: fetch_issue_brief
+    depends: claim_ready_issue
+    preconditions: &claimed
+      - condition: 'test "${claim_ready_issue.output.claimed}" = "true"'
+    working_dir: ${env.PROJECT_WORKSPACE}
+    continue_on: &carry_on
+      failure: true            # report the outcome on the issue either way
+    run: >
+      ${consts.impl}/fetch-issue-brief.sh
+      "${env.PROJECT_REPO}"
+      "${claim_ready_issue.output.issue_number}"
+      "${consts.run_dir_root}/${claim_ready_issue.output.issue_number}/implement"
+      "${env.PROJECT_WORKSPACE}"
+      "${env.IMPLEMENT_SKILL}"
+      minor
+
+  - id: announce_start_on_issue
+    depends: fetch_issue_brief
+    preconditions: *claimed
+    continue_on: *carry_on     # a missing notice must not cost us the run
+    run: >
+      ${consts.impl}/announce-start.sh
+      "${env.PROJECT_REPO}"
+      "${consts.run_dir_root}/${claim_ready_issue.output.issue_number}/implement"
+      "${context.run.id}"
+
+  - id: create_feature_worktree
+    depends: announce_start_on_issue
+    preconditions: *claimed
+    continue_on: *carry_on
+    run: >
+      ${consts.impl}/create-worktree.sh
+      "${env.PROJECT_WORKSPACE}"
+      "${consts.run_dir_root}/${claim_ready_issue.output.issue_number}/implement"
+
+  # A git worktree shares the repository but not ignored files, so it never has
+  # `sweatcharge_fe/node_modules` however complete the human's own checkout is.
+  # Nothing used to install it, which meant the first phase that wanted a frontend
+  # test had to improvise the install inside its own budget: on issue #158 the
+  # `tests` phase spent six minutes on a cold `yarn install` and reported `failed`
+  # without ever running the tests it had just written.
+  #
+  # Shell, and before the agents, so the cost is wall clock rather than model
+  # spend and a failure here says "the install broke" instead of "the tests
+  # phase broke". Unconditional: which files a run will touch is not known yet,
+  # and a warm cache makes this a minute. The script is idempotent, so a re-run
+  # against an existing worktree costs one `test -f`.
+  - id: install_frontend_dependencies
+    depends: create_feature_worktree
+    preconditions: *claimed
+    timeout_sec: 2400          # a cold cache genuinely takes minutes
+    retry_policy:
+      limit: 1                 # unlike the agent phases: a fetch that died
+      interval_sec: 30         # halfway through is exactly worth one retry
+    continue_on: *carry_on
+    run: >
+      ${consts.impl}/install-frontend-deps.sh
+      "${consts.run_dir_root}/${claim_ready_issue.output.issue_number}/implement"
+
+  # ------------------------------------------------------- the agent work ----
+  # Two agent phases, and `standard` for both. The major flow spends `deep` here
+  # because it is implementing a design it wrote an hour earlier against a task
+  # list it has to keep honest. This phase is handed a settled requirement and a
+  # located defect; the deep tier buys judgement that nothing here needs.
+  #
+  # The code phase does its own narrow reading -- there is no exploration phase
+  # ahead of it, so finding the code is part of the work. Its prompt says how:
+  # grep for the visible string, read that range, read its tests, stop.
+  - id: write_implementation_code
+    depends: install_frontend_dependencies
+    preconditions: *claimed
+    working_dir: ${env.PROJECT_WORKSPACE}
+    timeout_sec: 2400
+    retry_policy: &no_retry
+      limit: 0                 # a partial phase already changed the worktree
+      interval_sec: 0          # required by the schema even when retries are off
+    continue_on: *carry_on
+    run: >
+      ${consts.impl}/run-phase.sh code
+      "${consts.run_dir_root}/${claim_ready_issue.output.issue_number}/implement"
+      "${env.PROJECT_REPO}" "${env.PROJECT_WORKSPACE}" "${env.IMPLEMENT_SKILL}"
+      standard 2
+
+  # Still a separate phase from the code, for the same reason it is separate in
+  # the major flow: a pass that is trying to make a fix work is the wrong pass to
+  # judge whether the fix is right. This one starts from the diff, with the
+  # testing standards loaded, and is allowed to reject the implementation.
+  #
+  # It is also the last phase that reads the code at all -- there is no review
+  # after it on this flow -- so its prompt ends by asking it to read the whole
+  # diff once as a reviewer would before reporting `done`.
+  - id: write_tests_until_passing
+    depends: write_implementation_code
+    preconditions: *claimed
+    working_dir: ${env.PROJECT_WORKSPACE}
+    timeout_sec: 2400
+    retry_policy: *no_retry
+    continue_on: *carry_on
+    run: >
+      ${consts.impl}/run-phase.sh tests
+      "${consts.run_dir_root}/${claim_ready_issue.output.issue_number}/implement"
+      "${env.PROJECT_REPO}" "${env.PROJECT_WORKSPACE}" "${env.IMPLEMENT_SKILL}"
+      standard 2
+
+  # -------------------------------------------------------- verification ----
+  # The target repository's own commands, run from shell, with their exit status
+  # as the verdict; when they fail the `fix-verify` phase runs and the suite runs
+  # again, in a loop inside the step. No model ever declares the suite passed.
+  #
+  # The major flow runs this twice -- once as an early gate before it spends a
+  # deep review, and once after the spec sync, when every commit the branch will
+  # ever have finally exists. Here there is nothing between this step and the
+  # push: no review to resolve, no specs to sync, no archive. So one run, and it
+  # is both the gate and the authoritative verdict on the exact tree that ships.
+  - id: run_ci_until_passing
+    depends: write_tests_until_passing
+    preconditions: *claimed
+    timeout_sec: 7200          # the whole loop, not one pass of the suite
+    retry_policy: *no_retry
+    continue_on: *carry_on
+    run: >
+      ${consts.impl}/run-ci-until-passing.sh
+      "${consts.run_dir_root}/${claim_ready_issue.output.issue_number}/implement"
+      "${env.PROJECT_REPO}" "${env.PROJECT_WORKSPACE}" "${env.IMPLEMENT_SKILL}"
+      3 standard 2 verify
+
+  # --------------------------------------------------------------- ship ----
+  # One step, and no agent: the pull request body is assembled from files already
+  # on disk, then the branch is committed, pushed and the pull request opened.
+  # Nothing is checked here -- the suite that passed ran against this exact tree
+  # in the step before. The body says in plain words that this took the minor
+  # flow and had no automated review, because the human opening it is the first
+  # reviewer this diff has had.
+  - id: ship_code
+    depends: run_ci_until_passing
+    preconditions: *claimed
+    working_dir: ${env.PROJECT_WORKSPACE}
+    timeout_sec: 1800          # the commit and the push
+    retry_policy: *no_retry
+    continue_on: *carry_on
+    run: >
+      ${consts.impl}/ship-code.sh
+      "${env.PROJECT_REPO}"
+      "${consts.run_dir_root}/${claim_ready_issue.output.issue_number}/implement"
+
+  # --------------------------------------------------------------- report ----
+  # What the run cost, phase by phase. Worth keeping on this flow even though it
+  # is the cheap one: the whole claim of the minor pipeline is that it costs a
+  # fraction of the major one, and this table is the only place that claim is
+  # ever checked against what actually happened.
+  - id: summarize_run_usage
+    depends: ship_code
+    preconditions: *claimed
+    continue_on: *carry_on
+    run: >
+      ${consts.impl}/summarize-run.sh
+      "${consts.run_dir_root}/${claim_ready_issue.output.issue_number}/implement"
+
+  # Runs whichever phase the run reached, reading state.json to learn where it
+  # stopped and naming that phase in the comment. No `continue_on` here,
+  # deliberately: nothing follows, and a non-completed run has to reach the UI as
+  # red.
+  - id: report_run_outcome
+    depends: summarize_run_usage
+    preconditions: *claimed
+    working_dir: ${env.PROJECT_WORKSPACE}
+    run: >
+      ${consts.impl}/report-and-recover.sh
+      "${env.PROJECT_REPO}"
+      "${consts.run_dir_root}/${claim_ready_issue.output.issue_number}/implement"
+      "${claim_ready_issue.output.issue_number}"
+      "${context.run.id}"
+      "${context.paths.log_file}"

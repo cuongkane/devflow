@@ -87,6 +87,12 @@ step "backend tests" make test-ci
 # whatever happens to be uncommitted right now.
 if git -C "$worktree" diff --name-only "$base"...HEAD | grep -q '^sweatcharge_fe/'; then
   echo "frontend:                changed -- running lint, unit tests and production build"
+  # A no-op on the normal path: the install_frontend_dependencies step already ran
+  # before any agent phase. It is here for the case that step cannot cover --
+  # `make verify` against a run directory whose worktree was cleaned since, which
+  # would otherwise fail all three frontend checks on a missing node_modules and
+  # report it as three code failures.
+  step "frontend deps" "$here/install-frontend-deps.sh" "$run_dir"
   step "frontend lint" sh -c 'cd sweatcharge_fe && yarn lint'
   step "frontend unit tests" sh -c 'cd sweatcharge_fe && yarn test:unit'
   step "frontend build" sh -c 'cd sweatcharge_fe && yarn build'
