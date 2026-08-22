@@ -8,9 +8,15 @@
 # warnings, which cannot work in an unattended run. `--yes` is the whole reason
 # this is a shell step.
 #
-# Neither `--skip-specs` nor `--no-validate` is used. The sync phase already
-# merged the delta specs, which makes the archive's own spec update idempotent
-# and gives the CLI a final consistency check over the result.
+# `--skip-specs` is used, `--no-validate` is not. The sync phase already merged
+# the delta specs with agent judgement (that is the entire point of the
+# agent-driven sync step). The CLI's own spec merge is a second, purely
+# mechanical pass over the same deltas, and it is not idempotent against an
+# ADDED requirement that already exists: it aborts with "already exists"
+# instead of treating it as a no-op. Re-running it after the agent has already
+# applied the deltas turns a normal archive into a hard failure. Skipping it
+# does not weaken verification -- `openspec validate --specs --strict` below is
+# still the final consistency check over the merged result.
 set -eu
 
 run_dir=$1
@@ -30,7 +36,7 @@ openspec validate "$change" --strict
 
 echo
 echo "=== archive ==="
-openspec archive "$change" --yes
+openspec archive "$change" --yes --skip-specs
 
 # The change must be gone from the active list afterwards. If it is still there
 # the archive silently did nothing, and opening a pull request on top of an
