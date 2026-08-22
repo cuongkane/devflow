@@ -106,8 +106,12 @@ Every one of these must hold:
 - No change to authorization, club/tenancy isolation, or `Club-ID` handling.
 - No change to monetary logic or kVND units.
 - No new capability or requirement, and no change to what an existing requirement
-  *means*. Your `## Affected capabilities` section naming a capability whose
-  requirements would have to change is on its own enough to make this `major`.
+  *means*. Apply this test: after the change ships, would any sentence in the
+  relevant specs have to be added or rewritten? If the existing wording still
+  describes the fixed behaviour correctly — including when the fix makes one
+  screen conform to a pattern the specs already document elsewhere — that is
+  `minor`. Naming a capability in `## Affected capabilities` is not by itself
+  evidence either way; only a `changes` line there forces `major`.
 - Confined to a handful of files, and to behaviour a reviewer can judge from the
   diff alone.
 
@@ -144,7 +148,7 @@ What the user cannot do today. 1-3 sentences.
 - Only what the issue implied but should not be built now.
 
 ## Affected capabilities
-- `openspec/specs/<capability>` — what it says today that this changes or extends.
+- `openspec/specs/<capability>` — [changes | conforms to] what it says today: <what>.
 
 ## Acceptance criteria
 - [ ] One checkable, user-observable assertion per line.
@@ -159,6 +163,9 @@ Rules:
   Never write the same sentence in both.
 - Affected capabilities names OpenSpec capabilities only — never code paths,
   and only capabilities you actually read. Omit the section if none applies.
+  Label each line: `changes` when a requirement's text would have to be added
+  to or rewritten, `conforms to` when the existing text already describes the
+  behaviour being built. That label drives sizing, so choose it deliberately.
 - Every line must survive the test: *would this still be true if the code were
   rewritten from scratch?* If not, it is implementation and does not belong.
 - Fold in every answer the human has already given, silently, as a requirement
