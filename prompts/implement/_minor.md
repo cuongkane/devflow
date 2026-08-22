@@ -14,7 +14,7 @@ What the phase above may refer to that does not exist here:
 | the OpenSpec change `{{CHANGE}}` | `openspec show`, `openspec validate`, update its artifacts |
 | its `proposal.md`, `design.md`, `tasks.md`, delta specs | work the task list, keep the specs honest |
 | `{{RUN_DIR}}/explore.md` | read the earlier phase's findings |
-| `{{RUN_DIR}}/review-comments.md` | resolve the review's findings |
+| `{{REVIEW_COMMENTS_PATH}}` | resolve the review's findings |
 
 `{{CHANGE}}` is a name in `state.json` and nothing more on this path: no change
 directory was created, nothing will archive one, and this run does not touch the

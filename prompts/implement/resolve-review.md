@@ -1,10 +1,10 @@
 ## Phase: resolve the review comments
 
 The review phase read the branch diff and wrote its findings to
-`{{RUN_DIR}}/review-comments.md`. Read that file and resolve it.
+`{{REVIEW_COMMENTS_PATH}}`. Read that file and resolve it.
 
 ```
-{{RUN_DIR}}/review-comments.md   the findings to resolve
+{{REVIEW_COMMENTS_PATH}}   the findings to resolve
 {{DIFF_PATH}}                    the branch diff they were written against
 ```
 

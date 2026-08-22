@@ -47,7 +47,7 @@ set; you have everything you need to start.
 
 ## What to write
 
-Write your comments to `{{RUN_DIR}}/review-comments.md`, in severity order, one
+Write your comments to `{{REVIEW_COMMENTS_PATH}}`, in severity order, one
 section per finding:
 
 ```markdown
@@ -69,4 +69,4 @@ reads it: it skips the resolving agent entirely and goes straight to verificatio
 
 Do not edit code, tests, specs, or configuration. Do not sync specs, archive,
 push, or open a pull request. The only file you write is
-`{{RUN_DIR}}/review-comments.md` and your `result.json`.
+`{{REVIEW_COMMENTS_PATH}}` and your `result.json`.

@@ -45,6 +45,15 @@ here=$(cd "$(dirname "$0")" && pwd)
 out_dir="$run_dir/$phase"
 mkdir -p "$out_dir"
 
+# The review's findings file. It lives in the `review` phase directory next to
+# that phase's `result.json`, not in the run directory -- one placeholder, so the
+# phase that writes it and the phase that reads it cannot disagree about where it
+# is. They did: the prompt named `<run-dir>/review-comments.md` while
+# `result.json` was `<run-dir>/review/result.json`, the review agent collocated
+# both in the phase directory, and the resolving step then found no file and
+# failed a run whose review had in fact produced six findings.
+review_comments="$run_dir/review/review-comments.md"
+
 branch=$("$here/state.sh" get "$run_dir" branch)
 worktree=$("$here/state.sh" get "$run_dir" worktree)
 change=$("$here/state.sh" get "$run_dir" change)
@@ -106,6 +115,7 @@ cat "$prompts_dir/_preamble.md" "$src" $addendum "$out_dir/standards.md" \
         -e "s|{{ISSUE_NUMBER}}|$issue|g" \
         -e "s|{{BRIEF_PATH}}|$run_dir/brief.md|g" \
         -e "s|{{RUN_DIR}}|$run_dir|g" \
+        -e "s|{{REVIEW_COMMENTS_PATH}}|$review_comments|g" \
         -e "s|{{CONVENTIONS_PATH}}|$run_dir/conventions.md|g" \
         -e "s|{{DIFF_PATH}}|$run_dir/diff.md|g" \
         -e "s|{{DIFF_STAT_PATH}}|$run_dir/diff.stat|g" \
@@ -124,7 +134,7 @@ rm -f "$out_dir/result.json"
 
 # Print the assembled prompt, not just its path. The prompt is the input that
 # decides everything the phase does, and it is assembled from three files with
-# eleven placeholders substituted -- so when a phase behaves oddly, the first
+# eighteen placeholders substituted -- so when a phase behaves oddly, the first
 # question is always "what was it actually asked?". Having the answer in the run
 # view means not having to open a file on the worker to find out, and the run
 # history keeps it after /tmp has been cleared.

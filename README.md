@@ -350,7 +350,7 @@ scripts/implement/run-verification.sh    the target repo's own test/lint/build s
 scripts/implement/run-ci-until-passing.sh
                                          run it, fix what fails, repeat
 scripts/implement/resolve-review-comments.sh
-                                         act on review-comments.md
+                                         act on review/review-comments.md
 scripts/implement/summarize-run.sh       tokens and duration, phase by phase
 scripts/implement/finalize-openspec-change.sh
                                          sync the specs, then archive the change

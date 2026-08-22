@@ -19,6 +19,14 @@
 # still the final consistency check over the merged result.
 set -eu
 
+# Belt and braces with project.env: this script is the one that calls the CLI
+# four times, and it is also the one whose output a human reads when a run fails
+# here. `0` is OpenSpec's own opt-out; without it every flush that misses the
+# CLI's 1000 ms telemetry timeout prints a twelve-line PostHog stack trace, and
+# the `✗ spec/...` line that actually failed the step arrives buried in them.
+OPENSPEC_TELEMETRY=0
+export OPENSPEC_TELEMETRY
+
 run_dir=$1
 here=$(cd "$(dirname "$0")" && pwd)
 

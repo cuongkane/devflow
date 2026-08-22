@@ -4,8 +4,15 @@
 #   resolve-review-comments.sh <run-dir> <repo> <workspace> <skill>
 #                              [<tier>] [<budget-usd>]
 #
-# The review phase only reviews: it writes `<run-dir>/review-comments.md` and
-# touches nothing else. This step is the other half -- act on that file.
+# The review phase only reviews: it writes `<run-dir>/review/review-comments.md`
+# and touches nothing else. This step is the other half -- act on that file.
+#
+# That path is not spelled here twice by accident of history: it is the same
+# `{{REVIEW_COMMENTS_PATH}}` that build-prompt.sh substitutes into both phases'
+# prompts, so the writer and the reader cannot drift apart. They did once -- the
+# prompt said `<run-dir>/review-comments.md`, the agent wrote it next to its own
+# `result.json` in `<run-dir>/review/`, and this step failed a run whose review
+# had produced six findings.
 #
 # It used to run the verification suite afterwards too, so that the frontend
 # production build came from the final source state. It no longer does, because
@@ -29,7 +36,7 @@ tier=${5:-deep}
 budget=${6:-3}
 
 here=$(cd "$(dirname "$0")" && pwd)
-comments="$run_dir/review-comments.md"
+comments="$run_dir/review/review-comments.md"
 
 if [ ! -s "$comments" ]; then
   # The review phase reported `done` -- check-phase-result.sh already enforced
