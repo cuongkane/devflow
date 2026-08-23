@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Run the coding agent selected in agent.yaml and stream readable output.
 #
-# Usage: run-agent.sh <prompt-file> <budget-usd> <stream-jsonl> [tier]
+# Usage: run-agent.sh <prompt-file> <budget-usd> <stream-jsonl> [tier] [session] [codex-effort]
 #
 # tier is fast, standard or deep. agent.yaml maps it to a concrete model for
 # whichever agent is selected, so a DAG step asks for depth without naming a
@@ -17,6 +17,10 @@ tier=${4:-standard}
 # fix loop passes the id its first attempt returned so the next attempt reuses
 # the cached context instead of re-reading the diff, conventions and standards.
 continue_session=${5:-}
+# A phase can keep its model tier while using a lower or higher Codex reasoning
+# effort. This is intentionally an explicit opt-in rather than another global
+# mapping: tiers remain the normal workflow contract.
+codex_effort_override=${6:-}
 
 case "$tier" in
   fast|standard|deep) ;;
@@ -52,7 +56,7 @@ case "$agent" in
     # all, and an empty string would be passed as one.
     args=(exec --json --dangerously-bypass-approvals-and-sandbox)
     [ -n "$model" ] && args+=(--model "$model")
-    effort=$(setting "effort_codex_${tier}")
+    effort=${codex_effort_override:-$(setting "effort_codex_${tier}")}
     [ -n "$effort" ] && args+=(-c "model_reasoning_effort=\"$effort\"")
 
     # stdout, not stderr: which model ran a phase is the first thing anyone asks

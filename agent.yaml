@@ -25,7 +25,7 @@ model_codex_deep: gpt-5.6-sol
 # model_reasoning_effort alone.
 effort_codex_fast: low
 effort_codex_standard: medium
-effort_codex_deep: high
+effort_codex_deep: medium
 
 # opencode names a model as `provider/model`. Unlike the two agents above, these
 # tiers are pinned rather than left at `default`, because `default` is not safe

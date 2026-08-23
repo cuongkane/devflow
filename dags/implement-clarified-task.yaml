@@ -202,7 +202,7 @@ steps:
       ${consts.impl}/run-phase.sh tests
       "${consts.run_dir_root}/${claim_ready_issue.output.issue_number}/implement"
       "${env.PROJECT_REPO}" "${env.PROJECT_WORKSPACE}" "${env.IMPLEMENT_SKILL}"
-      deep 4
+      standard 4
 
   # -------------------------------------------------------- verification ----
   # One step, not three. The target repository's own commands run from shell and
@@ -271,7 +271,7 @@ steps:
       ${consts.impl}/resolve-review-comments.sh
       "${consts.run_dir_root}/${claim_ready_issue.output.issue_number}/implement"
       "${env.PROJECT_REPO}" "${env.PROJECT_WORKSPACE}" "${env.IMPLEMENT_SKILL}"
-      deep 3
+      standard 3 low
 
   # ------------------------------------------------ specifications, then PR ----
   # Syncing and archiving are one step: syncing without archiving leaves the
@@ -291,7 +291,7 @@ steps:
       ${consts.impl}/finalize-openspec-change.sh
       "${consts.run_dir_root}/${claim_ready_issue.output.issue_number}/implement"
       "${env.PROJECT_REPO}" "${env.PROJECT_WORKSPACE}" "${env.IMPLEMENT_SKILL}"
-      fast 1
+      standard 1
 
   # The last thing to run before anything leaves this machine, and the reason it
   # is here rather than three steps earlier: every commit the branch will ever

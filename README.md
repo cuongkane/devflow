@@ -39,7 +39,7 @@ switching the agent above leaves every step valid:
 ```yaml
 model_claude_deep: opus
 model_codex_deep: gpt-5.6-sol
-effort_codex_deep: high          # codex also uses reasoning effort
+effort_codex_deep: medium        # codex also uses reasoning effort
 model_opencode_deep: deepseek/deepseek-v4-pro   # `provider/model`
 variant_opencode_deep: default   # its depth axis is `--variant`
 ```
@@ -515,7 +515,9 @@ name from the issue and writes them to `state.json`. Previously the agent invent
 all four inside the opaque step, so nothing outside it could address them — which
 is precisely why the work could not be split. Each phase also stamps its name on
 `state.json`, so when a run is killed the report says which phase it died in and
-what survives on disk.
+what survives on disk. Before selecting the base ref, the script fetches
+`origin`, so each new feature worktree branches from the latest remote default
+branch rather than a stale remote-tracking ref.
 
 **`node_modules` is installed in shell, before any agent runs.** A git worktree
 shares the repository but not ignored files, so it never has

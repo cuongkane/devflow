@@ -55,8 +55,13 @@ slug=$(printf '%s' "$slug" | sed -e 's/-$//')
 [ -n "$slug" ] || slug="issue"
 name="$issue-$slug"
 
-# The base the worktree branches from. Do not fetch first: the poller runs every
-# ten minutes and a fetch here would race the human's own work in the checkout.
+# Refresh the remote-tracking refs before choosing the base. Fetching only
+# updates Git's shared refs; it does not switch branches or modify the human's
+# working tree. This ensures the feature branch starts from the current remote
+# default branch rather than a potentially stale local origin/* ref.
+git -C "$workspace" fetch origin
+
+# The base the worktree branches from.
 base=$(git -C "$workspace" symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null || true)
 if [ -z "$base" ]; then
   if git -C "$workspace" rev-parse --verify --quiet origin/master >/dev/null; then

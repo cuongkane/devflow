@@ -2,7 +2,7 @@
 # Resolve the review's comments.
 #
 #   resolve-review-comments.sh <run-dir> <repo> <workspace> <skill>
-#                              [<tier>] [<budget-usd>]
+#                              [<tier>] [<budget-usd>] [<codex-effort>]
 #
 # The review phase only reviews: it writes `<run-dir>/review/review-comments.md`
 # and touches nothing else. This step is the other half -- act on that file.
@@ -34,6 +34,7 @@ workspace=$3
 skill=$4
 tier=${5:-deep}
 budget=${6:-3}
+codex_effort=${7:-}
 
 here=$(cd "$(dirname "$0")" && pwd)
 comments="$run_dir/review/review-comments.md"
@@ -59,4 +60,4 @@ printf '\n########## resolve-review: resolving ##########\n'
 # `set -e` would swallow the distinction between blocked and failed, and
 # `blocked` has to survive as 20 all the way up to the DAG.
 exec "$here/run-phase.sh" resolve-review "$run_dir" "$repo" "$workspace" "$skill" \
-  "$tier" "$budget"
+  "$tier" "$budget" "" "$codex_effort"
