@@ -94,10 +94,10 @@ specs and archives the change. Nine agent phases.
 **`minor`** — code, tests, verify, ship. Three agent phases, no proposal, no
 exploration phase, no automated review, and the main specs are not touched.
 
-Answer `minor` only when the requirements are **already settled** — when
-implementing the issue introduces no new product meaning, because it makes the
-code do what the brief, or a specification that already exists, says it should.
-Every one of these must hold:
+Answer `minor` when the requirements are **already settled** and the change is
+small enough for the short pipeline. This includes both narrow fixes and minor
+features whose complete intended behaviour is explicit in the brief. Every one
+of these must hold:
 
 - No new or changed API contract: no new endpoint, no change to a request or
   response shape, and no change to types, casing, nullability or error semantics
@@ -105,19 +105,19 @@ Every one of these must hold:
 - No database migration.
 - No change to authorization, club/tenancy isolation, or `Club-ID` handling.
 - No change to monetary logic or kVND units.
-- No new capability or requirement, and no change to what an existing requirement
-  *means*. Apply this test: after the change ships, would any sentence in the
-  relevant specs have to be added or rewritten? If the existing wording still
-  describes the fixed behaviour correctly — including when the fix makes one
-  screen conform to a pattern the specs already document elsewhere — that is
-  `minor`. Naming a capability in `## Affected capabilities` is not by itself
-  evidence either way; only a `changes` line there forces `major`.
+- No broad or ambiguous capability, and no change to what an existing requirement
+  *means*. A small, self-contained feature may be `minor` when the brief fully
+  specifies its behaviour and no product or technical design is left to the
+  implementer. Naming a capability in `## Affected capabilities` is not by itself
+  evidence either way; a `changes` line there forces `major` only when it calls
+  for a broader specification or a redefinition of existing behaviour.
 - Confined to a handful of files, and to behaviour a reviewer can judge from the
   diff alone.
 
-Typical `minor` work: a frontend defect (wrong label, wrong spacing, wrong sort
-order, a state that does not clear), a missing null or empty guard, an off-by-one,
-copy text, a wrong default, a log message, a narrow bug fix inside one function.
+Typical `minor` work: a small, fully specified feature confined to a handful of
+files; a frontend defect (wrong label, wrong spacing, wrong sort order, a state
+that does not clear); a missing null or empty guard; an off-by-one; copy text; a
+wrong default; a log message; a narrow bug fix inside one function.
 
 **Answer `major` for everything else, and for everything you are unsure about.**
 The asymmetry is the whole reason to be careful: `major` on a small fix wastes an

@@ -383,13 +383,14 @@ an extra agent run whose entire purpose is to discover that a change is cheap, o
 you applying a label by hand. Asking there costs nothing: the clarifier has
 already read the repository in order to write the brief.
 
-**`minor` is the answer only when the requirements are already settled** — when
-implementing the issue introduces no new product meaning, because it makes the
-code do what the brief, or an existing specification, already says it should. No
-API contract change, no migration, no authorization or tenancy change, no
-monetary logic, no new or redefined requirement, and confined to a handful of
-files. A wrong label, a missing null guard, an off-by-one, copy text, a wrong
-default.
+**`minor` is the answer when the requirements are already settled and the change
+is small enough for the short pipeline.** That includes a minor feature whose
+complete intended behaviour is explicit in the brief, as well as a narrow fix.
+There must be no API contract change, migration, authorization or tenancy change,
+monetary logic, broad or ambiguous capability, or redefinition of existing
+behaviour, and the work must be confined to a handful of files. A small,
+fully-specified feature, a wrong label, a missing null guard, an off-by-one, copy
+text, or a wrong default can therefore be `minor`.
 
 **`major` is the answer to everything else, and to everything uncertain.** The
 asymmetry is deliberate and it is stated in the clarifier's prompt: `major` on a
