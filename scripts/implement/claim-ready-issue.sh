@@ -40,18 +40,30 @@ if [ "$issue" = none ]; then
     issue_number: "",
     message: ("No issue is waiting on " + $queue + ". This poll completed without work.")
   }'
-elif "$scripts_dir/relabel.sh" "$repo" "$issue" "$queue" agent:implementing; then
-  echo "[claim] #$issue: $queue -> agent:implementing" >&2
-  jq -nc --arg issue "$issue" '{
-    claimed: true,
-    issue_number: $issue,
-    message: ("Claimed issue #" + $issue + " for implementation.")
-  }'
+elif "$scripts_dir/codex-usage-available.sh" 10; then
+  if "$scripts_dir/relabel.sh" "$repo" "$issue" "$queue" agent:implementing; then
+    echo "[claim] #$issue: $queue -> agent:implementing" >&2
+    jq -nc --arg issue "$issue" '{
+      claimed: true,
+      issue_number: $issue,
+      message: ("Claimed issue #" + $issue + " for implementation.")
+    }'
+  else
+    echo "[claim] #$issue: skipped because its state changed" >&2
+    jq -nc --arg issue "$issue" '{
+      claimed: false,
+      issue_number: "",
+      message: ("Issue #" + $issue + " was selected but could not be claimed because its state changed.")
+    }'
+  fi
 else
-  echo "[claim] #$issue: skipped because its state changed" >&2
+  usage_status=$?
+  if [ "$usage_status" -ne 75 ]; then
+    exit "$usage_status"
+  fi
   jq -nc --arg issue "$issue" '{
     claimed: false,
     issue_number: "",
-    message: ("Issue #" + $issue + " was selected but could not be claimed because its state changed.")
+    message: ("Deferred issue #" + $issue + " because less than 10% of the Codex quota remains. It stays queued for the next poll.")
   }'
 fi

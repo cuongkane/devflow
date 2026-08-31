@@ -324,6 +324,8 @@ prompts/standards/                       the engineering practices and testing
 
 scripts/standards.sh                     print the standards appendix for a prompt
 scripts/relabel.sh                       guarded claim: swap FROM -> TO
+scripts/codex-usage-available.sh         defer an implementation claim when any
+                                         Codex quota window has <10% remaining
 scripts/set-state.sh                     unguarded report: force exactly one state
 scripts/pick-oldest.sh                   read a queue label, pick the oldest issue
 scripts/triage-issue.sh                  issue -> pull request -> decision
@@ -793,6 +795,12 @@ project configuration. Then run `make labels` for the target repo.
   namespaced per checkout (`swc-test-<hash>`) and publishes no host ports, which
   is what makes concurrent suites safe. Raise the queue limit only if the Mac
   has the RAM for that many Docker test stacks and coding-agent processes.
+- **Codex keeps 10% quota headroom.** Before either implementer changes a ready
+  label to `agent:implementing`, it reads Codex's account rate-limit snapshot.
+  If any reported rolling window has less than 10% remaining, the run completes
+  without claiming the issue; the unchanged ready label lets the next scheduled
+  poll retry it. Claude and opencode bypass this gate. A failed quota lookup is
+  surfaced as a failed run and also leaves the issue queued.
 - **Clarification and review are not serialised** with implementation, and do not
   need to be. A long build no longer blocks a question being asked.
 - **The Mac must be awake.** A polling scheduler does nothing while asleep.
