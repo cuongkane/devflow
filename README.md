@@ -364,6 +364,8 @@ scripts/implement/report-and-recover.sh  report the outcome, then never leave th
 scripts/implement/report-outcome.sh      comment the outcome, name the failed phase
 scripts/implement/recover-stranded-label.sh
                                          the fallback when reporting itself failed
+scripts/implement/reclaim-workspace.sh   drop the run's ignored build output,
+                                         keeping the worktree and its branch
 
 run-agent.sh                             configured agent + tier + live streaming
 render-agent-stream.jq                   shared Claude/Codex/opencode renderer
@@ -372,6 +374,37 @@ data/  logs/                             runtime state (gitignored)
 ```
 
 DAG discovery is **not recursive** — `dags/` must stay flat.
+
+### What a run leaves on disk
+
+A run's worktree costs about 640MB, and roughly 611MB of that is
+`sweatcharge_fe/node_modules` — a git worktree shares the repository but not
+ignored files, so every run installs its own copy. The source in that same
+worktree is 29MB. Dependencies are 95% of what a run costs the disk, and all of
+it is reconstructible.
+
+So the two are reclaimed on different signals:
+
+| What | When | By |
+|---|---|---|
+| Ignored build output (`node_modules`, `.angular`, `www`, …) | end of every run, whatever its outcome | `handler_on.exit` → `reclaim-workspace.sh` |
+| The worktree and its branch | when the pull request actually merges | `finish_merged` in `resolve-code-review.yaml` |
+
+The worktree outlives the run on purpose. `create-worktree.sh` is idempotent so
+a single phase can be re-run against work already done; `reclaim-stranded.sh`
+tells the issue in writing that the previous attempt's worktree is still there to
+be reused; and the review flow answers comments in that same worktree days later.
+Removing it at the end of a run would break all three to reclaim the 29MB that is
+not the problem.
+
+Dropping the dependencies breaks none of it. `install-frontend-deps.sh` is
+idempotent and runs as its own DAG step before any agent phase, so a re-run
+reinstalls and pays for it in shell rather than out of an agent's budget and
+timeout — which is the arrangement that script exists to guarantee.
+
+`reclaim-workspace.sh` removes a directory only if `git check-ignore` says the
+target repository ignores it. Anything tracked is source; anything untracked but
+not ignored may be work an agent has not committed yet.
 
 ## The two implementation flows
 
@@ -795,6 +828,14 @@ project configuration. Then run `make labels` for the target repo.
   namespaced per checkout (`swc-test-<hash>`) and publishes no host ports, which
   is what makes concurrent suites safe. Raise the queue limit only if the Mac
   has the RAM for that many Docker test stacks and coding-agent processes.
+- **A worker that dies takes its cleanup with it.** `handler_on.exit` reclaims a
+  run's build output on success, failure, timeout and abort alike, but it runs on
+  the worker — so it cannot fire for the one failure that most needs it, the
+  worker process itself disappearing. That run's `node_modules` stays on disk
+  until the issue is picked up again and the worktree is reused, or until the
+  pull request merges and `finish_merged` removes the worktree outright. This is
+  the same hole `reclaim-stranded.sh` closes for labels, and nothing sweeps it
+  for disk: if the worker is being killed often, check free space by hand.
 - **Codex keeps 10% quota headroom.** Before either implementer changes a ready
   label to `agent:implementing`, it reads Codex's account rate-limit snapshot.
   If any reported rolling window has less than 10% remaining, the run completes

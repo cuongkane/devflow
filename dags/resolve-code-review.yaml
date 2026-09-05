@@ -300,3 +300,22 @@ steps:
       printf 'pull_request: #%s\n' "${PR_NUMBER}"
       printf 'transition:  agent:reviewing -> agent:failed\n'
     continue_on: skipped
+
+# ----------------------------------------------------------------- reclaim ----
+# The review agent works in the feature worktree and rebuilds whatever it needs
+# to run tests there, so this flow puts node_modules back into a worktree that
+# the implementation run had already cleaned. Without this handler the disk leak
+# simply moves here.
+#
+# It resolves the worktree from `triage.json`, which the inspect step has already
+# written -- this flow has no state.json because it never chose a path; it is
+# answering comments on a branch that existed before it started.
+#
+# Harmless on the merged path: `finish_merged` has removed the worktree by the
+# time this runs, and a worktree that is gone reclaims nothing and says so.
+handler_on:
+  exit:
+    run: >
+      ${consts.scripts_dir}/implement/reclaim-workspace.sh
+      "${env.PROJECT_WORKSPACE}"
+      "/tmp/dagu-agent/${ISSUE_NUMBER}/review"

@@ -258,3 +258,16 @@ steps:
       "${claim_ready_issue.output.issue_number}"
       "${context.run.id}"
       "${context.paths.log_file}"
+
+# ----------------------------------------------------------------- reclaim ----
+# Same handler as the major flow, and for the same reason: the minor pipeline
+# installs the identical 611MB of frontend dependencies into its own worktree, so
+# it leaks disk at exactly the same rate however much less it spends on agents.
+# See implement-clarified-task.yaml for why this is an exit handler and not a
+# step, and reclaim-workspace.sh for what it does and does not delete.
+handler_on:
+  exit:
+    run: >
+      ${consts.impl}/reclaim-workspace.sh
+      "${env.PROJECT_WORKSPACE}"
+      "${consts.run_dir_root}/${claim_ready_issue.output.issue_number}/implement"

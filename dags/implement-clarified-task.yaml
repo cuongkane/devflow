@@ -367,3 +367,22 @@ steps:
       "${claim_ready_issue.output.issue_number}"
       "${context.run.id}"
       "${context.paths.log_file}"
+
+# ----------------------------------------------------------------- reclaim ----
+# `exit` rather than a final step, because this has to run on every outcome and
+# a step cannot. `report_run_outcome` deliberately carries no `continue_on` -- a
+# non-completed run has to reach the UI as red -- so anything depending on it
+# would be skipped on exactly the runs whose worktree lingers longest: the ones
+# that died mid-phase. An exit handler runs last on success, failure, timeout and
+# abort alike, and still resolves step outputs, so it can name the run directory.
+#
+# What it removes is only ignored build output, node_modules above all. The
+# worktree and the branch stay: a phase may still be re-run against them, and
+# resolve-code-review.yaml answers review comments in that same worktree days
+# later. The worktree itself is reclaimed on merge, by `finish_merged`.
+handler_on:
+  exit:
+    run: >
+      ${consts.impl}/reclaim-workspace.sh
+      "${env.PROJECT_WORKSPACE}"
+      "${consts.run_dir_root}/${claim_ready_issue.output.issue_number}/implement"
