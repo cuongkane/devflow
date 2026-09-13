@@ -16,7 +16,7 @@ steps:
       agent=$(awk '/^[[:space:]]*agent:[[:space:]]*/ {print $2; exit}' "${consts.dagu_root}/agent.yaml")
       case "$agent" in codex|claude|opencode) ;; *) echo "Unsupported agent: $agent" >&2; exit 2 ;; esac
       # openspec is here because the implementation DAG calls it from shell to
-      # validate and archive changes. It is a Volta global on the host and a
+      # validate changes and main specs. It is a Volta global on the host and a
       # plain npm global in the worker image, so it is the tool most likely to be
       # present in one place and missing in the other.
       for bin in "$agent" gh git jq make docker openspec; do

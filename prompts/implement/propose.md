@@ -30,7 +30,7 @@ Follow the CLI-reported artifact graph and paths rather than assuming locations.
 
 Run `openspec status --change "{{CHANGE}}"` and `openspec validate "{{CHANGE}}"
 --strict`. Fix every artifact error. A change that does not validate here fails
-the archive phase two hours later, after all the expensive work is done.
+the cleanup phase two hours later, after all the expensive work is done.
 
 ## Boundaries
 

@@ -17,9 +17,9 @@ What the phase above may refer to that does not exist here:
 | `{{REVIEW_COMMENTS_PATH}}` | resolve the review's findings |
 
 `{{CHANGE}}` is a name in `state.json` and nothing more on this path: no change
-directory was created, nothing will archive one, and this run does not touch the
-main specs. Do not create any of it. Do not run `openspec new change`,
-`openspec archive` or `openspec validate`, and do not edit anything under
+directory was created, nothing will remove one, and this run does not touch the
+main specs. Do not create any of it. Do not run `openspec new change` or
+`openspec validate`, and do not edit anything under
 `{{WORKTREE}}/openspec/`.
 
 The requirements are in `{{BRIEF_PATH}}`, and only there.

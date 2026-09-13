@@ -31,12 +31,12 @@ openspec status --change "{{CHANGE}}"
 openspec validate "{{CHANGE}}" --strict
 ```
 
-Fix anything either reports. The next step archives this change from shell with
-`--yes` and no human to confirm a warning, so it has to be clean when you leave it.
+Fix anything either reports. The next step removes the temporary change directory
+from shell, so it has to be clean when you leave it.
 
 Commit the spec changes.
 
 ## Boundaries
 
-Do not archive the change — the next step does that. Do not push or open a pull
+Do not remove the change — the next step does that. Do not push or open a pull
 request.

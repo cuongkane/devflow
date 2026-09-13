@@ -54,7 +54,7 @@ Commit as you go on `{{BRANCH}}`, following the conventions in recent history.
 Do not run the full verification suite — the `verify` step runs the target
 repository's own commands from shell immediately after you, and its exit status
 is the verdict, not yours. Running it here spends your budget on the same answer.
-Do not push, do not open a pull request, do not sync or archive specs, and do not
+Do not push, do not open a pull request, do not finalize specs, and do not
 refactor code the change did not touch.
 
 Report `done` only if the tests you wrote actually pass. If you leave anything

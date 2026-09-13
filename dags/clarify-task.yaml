@@ -148,7 +148,7 @@ steps:
       interval_sec: 0
     continue_on:
       failure: true            # report the outcome on the issue either way
-    run: ${consts.agent_runner} "/tmp/dagu-agent/${ISSUE_NUMBER}/clarify/prompt.md" ${consts.budget_usd} "/tmp/dagu-agent/${ISSUE_NUMBER}/clarify/agent-stream.jsonl"
+    run: ${consts.agent_runner} "/tmp/dagu-agent/${ISSUE_NUMBER}/clarify/prompt.md" ${consts.budget_usd} "/tmp/dagu-agent/${ISSUE_NUMBER}/clarify/agent-stream.jsonl" deep
 
   - id: report
     depends: clarify

@@ -13,9 +13,10 @@ hands it on by setting a different one.
 **Implementation forks in two.** Clarification sizes the work as well as
 clarifying it, and promotes the issue to one of two ready labels. A `major` task —
 one that introduces new product meaning — gets the full pipeline: explore, write
-an OpenSpec proposal, implement, test, verify, review, sync the specs, archive,
-verify again, ship. A `minor` task — a defect fix, a copy or layout correction, a
-missing guard — gets code, tests, verify, ship. Nine agent phases against three.
+an OpenSpec proposal, implement, test, verify, review, sync the specs, remove the
+temporary change artifacts, verify again, ship. A `minor` task — a defect fix, a
+copy or layout correction, a missing guard — gets code, tests, verify, ship. Nine
+agent phases against three.
 The fork exists because writing a specification before writing code is right for a
 feature and pure waste for a wrong label on a card. See
 [The two implementation flows](#the-two-implementation-flows).
@@ -38,8 +39,8 @@ switching the agent above leaves every step valid:
 
 ```yaml
 model_claude_deep: opus
-model_codex_deep: gpt-5.6-sol
-effort_codex_deep: medium        # codex also uses reasoning effort
+model_codex_deep: gpt-5.6-luna
+effort_codex_deep: high          # codex also uses reasoning effort
 model_opencode_deep: deepseek/deepseek-v4-pro   # `provider/model`
 variant_opencode_deep: default   # its depth axis is `--variant`
 ```
@@ -355,8 +356,8 @@ scripts/implement/resolve-review-comments.sh
                                          act on review/review-comments.md
 scripts/implement/summarize-run.sh       tokens and duration, phase by phase
 scripts/implement/finalize-openspec-change.sh
-                                         sync the specs, then archive the change
-scripts/implement/archive-change.sh      openspec archive --yes, then validate
+                                         sync the specs, then remove the change
+scripts/implement/remove-change.sh       delete change artifacts, then validate
 scripts/implement/ship-code.sh           assemble a minimal PR body, then open the PR
 scripts/implement/open-pull-request.sh   verify origin, commit, push, gh pr create
 scripts/implement/report-and-recover.sh  report the outcome, then never leave the
@@ -454,7 +455,7 @@ one set of scripts:
 | `install_frontend_dependencies` | shell | ✓ | ✓ |
 | `explore_codebase_context` | agent | fast $1, 15m | — |
 | `write_openspec_proposal` | agent | standard $2, 15m | — |
-| `write_implementation_code` | agent | **deep** $5, 60m | standard $2, 40m |
+| `write_implementation_code` | agent | **deep** $5, 60m | **deep** $2, 40m |
 | `write_tests_until_passing` | agent | **deep** $4, 60m | standard $2, 40m |
 | `run_ci_until_passing` | shell + agent | standard $2 × 2, 2h | standard $2 × 2, 2h |
 | `review_code` | agent | **deep** $3, 30m | — |
@@ -465,9 +466,9 @@ one set of scripts:
 | `summarize_run_usage` | shell | ✓ | ✓ |
 | `report_run_outcome` | shell | ✓ | ✓ |
 
-Nine agent phases against three, and the two expensive ones drop a model tier. A
-change whose requirements are already settled does not need the model that
-designs.
+Nine agent phases against three. Both flows use the deep tier to write code; the
+minor flow keeps its tests and verification fixes on standard because its
+requirements are already settled.
 
 **Two DAGs, not one DAG with a branch.** `dags/implement-clarified-task.yaml` and
 `dags/implement-minor-clarified-task.yaml` are separate files, and the reason is
@@ -482,8 +483,8 @@ what order, not what any of them do.
 major flow runs it twice — early, so a deep review is not spent on a diff that
 does not compile, and again after the spec sync, when every commit the branch will
 ever have finally exists. On the minor flow nothing happens between the suite and
-the push: no review to resolve, no specs to sync, no archive. So one run, and it
-is both the gate and the verdict on the exact tree that ships.
+the push: no review to resolve, no specs to sync, no change artifacts to remove.
+So one run, and it is both the gate and the verdict on the exact tree that ships.
 
 **`minor` has no automated review, and its pull request says so.** There is no
 `review_code` and no `resolve_review_comment`. `ship-code.sh` writes that into the
@@ -582,7 +583,7 @@ four runs at once in a single container. Two cold installs fetching the same
 package concurrently is how yarn produces `YN0001: While persisting <cache entry>`.
 
 **Deterministic phases have no model behind them.** The worktree, the dependency
-install, the verification commands, the archive, the push and the pull request are
+install, the verification commands, spec cleanup, the push and the pull request are
 exact, checkable operations. `run-verification.sh` runs the target repository's own
 `make test-ci-migrations`, `make test-ci` and — only when `sweatcharge_fe/`
 changed — `yarn lint`, `yarn test:unit` and `yarn build`. Running them from shell

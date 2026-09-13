@@ -7,9 +7,10 @@ max_output_size: 10485760
 
 # The short flow. It exists because the major pipeline writes a specification
 # before it writes code -- an exploration, an OpenSpec proposal with delta specs
-# and a task list, an automated review, then a spec sync and an archive -- and
+# and a task list, an automated review, then a spec sync and cleanup -- and
 # that is right for a feature and pure waste for a two-line UI defect. Nine agent
-# phases to correct a wrong label is not caution, it is spending.
+# phases to correct a wrong label is not caution, it is spending. Code writing
+# still uses the deep tier; tests and verification fixes use standard.
 #
 # So this DAG is what is left when the specification work is removed: write the
 # fix, write its tests, run the repository's own checks until they pass, open the
@@ -145,10 +146,9 @@ steps:
       "${consts.run_dir_root}/${claim_ready_issue.output.issue_number}/implement"
 
   # ------------------------------------------------------- the agent work ----
-  # Two agent phases, and `standard` for both. The major flow spends `deep` here
-  # because it is implementing a design it wrote an hour earlier against a task
-  # list it has to keep honest. This phase is handed a settled requirement and a
-  # located defect; the deep tier buys judgement that nothing here needs.
+  # Code writing uses `deep`, just as it does in the major flow. Even a settled,
+  # located defect benefits from the stronger model while the implementation is
+  # being changed; the separate tests phase remains `standard`.
   #
   # The code phase does its own narrow reading -- there is no exploration phase
   # ahead of it, so finding the code is part of the work. Its prompt says how:
@@ -166,7 +166,7 @@ steps:
       ${consts.impl}/run-phase.sh code
       "${consts.run_dir_root}/${claim_ready_issue.output.issue_number}/implement"
       "${env.PROJECT_REPO}" "${env.PROJECT_WORKSPACE}" "${env.IMPLEMENT_SKILL}"
-      standard 2
+      deep 2
 
   # Still a separate phase from the code, for the same reason it is separate in
   # the major flow: a pass that is trying to make a fix work is the wrong pass to
@@ -197,8 +197,9 @@ steps:
   # The major flow runs this twice -- once as an early gate before it spends a
   # deep review, and once after the spec sync, when every commit the branch will
   # ever have finally exists. Here there is nothing between this step and the
-  # push: no review to resolve, no specs to sync, no archive. So one run, and it
-  # is both the gate and the authoritative verdict on the exact tree that ships.
+  # push: no review to resolve, no specs to sync, no change artifacts to remove.
+  # So one run, and it is both the gate and the authoritative verdict on the
+  # exact tree that ships.
   - id: run_ci_until_passing
     depends: write_tests_until_passing
     preconditions: *claimed

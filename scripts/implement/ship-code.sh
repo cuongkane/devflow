@@ -4,8 +4,8 @@
 #   ship-code.sh <repo> <run-dir>
 #
 # The pull request body used to be written by an agent phase that re-read the
-# whole diff and the archived artifacts before writing prose, which made the
-# cheapest phase in the pipeline one of the most expensive. Everything that body
+# whole diff and the temporary OpenSpec artifacts before writing prose, which
+# made the cheapest phase in the pipeline one of the most expensive. Everything that body
 # described is already on disk as shell-produced files, so it is assembled from
 # those instead: the issue title as the summary, the OpenSpec change name, and
 # the verification summary as the evidence of what passed.
@@ -15,8 +15,8 @@
 # and `gh pr create`; this script only owns the prose the PR is opened with.
 #
 # Both flows ship through here. The body differs in one section: a major run names
-# the OpenSpec change it archived, a minor run says that there is none and that
-# nothing has reviewed the diff yet.
+# the OpenSpec change whose deltas it synchronized; a minor run says there is
+# none and that nothing has reviewed the diff yet.
 set -eu
 
 repo=$1

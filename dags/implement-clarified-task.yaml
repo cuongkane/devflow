@@ -34,7 +34,7 @@ max_output_size: 10485760
 # their prompts in prompts/implement/. Editing what a phase *does* means editing a
 # script or a prompt; this file only says what order they happen in.
 #
-# Deterministic phases -- the worktree, the verification commands, the archive,
+# Deterministic phases -- the worktree, the verification commands, spec cleanup,
 # the push and the pull request -- are shell, with no model involved. They are
 # exact, checkable operations; a language model could only make them less
 # reliable and more expensive.
@@ -274,17 +274,16 @@ steps:
       standard 3 low
 
   # ------------------------------------------------ specifications, then PR ----
-  # Syncing and archiving are one step: syncing without archiving leaves the
-  # change active on top of specs that already describe it, and archiving without
-  # syncing throws the deltas away. The agent merges the prose; the archive is
-  # `openspec archive --yes` from shell, because the repository's own archive
-  # skill prompts for a change and for warning confirmation and cannot run
-  # unattended. The division is inside the script, not in the graph.
+  # Syncing and cleanup are one step: syncing without cleanup leaves the change
+  # active on top of specs that already describe it, and cleanup without syncing
+  # throws the deltas away. The agent merges the prose; shell then removes the
+  # temporary change directory so only the synchronized spec diff remains. The
+  # division is inside the script, not in the graph.
   - id: finalize_openspec_change
     depends: resolve_review_comment
     preconditions: *claimed
     working_dir: ${env.PROJECT_WORKSPACE}
-    timeout_sec: 1500          # the sync phase and the archive, not one of them
+    timeout_sec: 1500          # the sync phase and cleanup, not one of them
     retry_policy: *no_retry
     continue_on: *carry_on
     run: >
@@ -296,7 +295,7 @@ steps:
   # The last thing to run before anything leaves this machine, and the reason it
   # is here rather than three steps earlier: every commit the branch will ever
   # have now exists. The review's fixes are in, the synced specs are in, the
-  # change is archived. This is the only point in the graph where "the suite
+  # temporary change is removed. This is the only point in the graph where "the suite
   # passed on the final source state" is literally true -- which is what the
   # frontend production build requirement actually asks for, and what the pull
   # request will claim.

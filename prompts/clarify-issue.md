@@ -89,7 +89,7 @@ between.
 **`major`** — the full pipeline. It explores the repository, writes an OpenSpec
 proposal with delta specs and a task list, implements it, tests it, reviews the
 diff and resolves its own findings, then merges the delta specs into the main
-specs and archives the change. Nine agent phases.
+specs and removes the temporary change artifacts. Nine agent phases.
 
 **`minor`** — code, tests, verify, ship. Three agent phases, no proposal, no
 exploration phase, no automated review, and the main specs are not touched.

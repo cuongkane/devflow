@@ -1,6 +1,6 @@
 ## Phase: write the pull request description and the issue report
 
-Everything is built, reviewed, synced, archived and verified — in that order, so
+Everything is built, reviewed, synced, cleaned up and verified — in that order, so
 the suite that passed ran against exactly the tree that is about to be pushed.
 Nothing is pushed yet. Your job is the prose that a human reads before any of it — and nothing else.
 
@@ -14,9 +14,9 @@ Read the diff and the artifacts before writing a word:
 {{VERIFY_SUMMARY_PATH}}     the verification result
 ```
 
-plus `rtk git log --oneline {{BASE}}..HEAD` from inside `{{WORKTREE}}`, and the
-archived `{{CHANGE}}` artifacts. Describe what the diff actually contains. Do not
-describe what the plan said it would contain.
+plus `rtk git log --oneline {{BASE}}..HEAD` from inside `{{WORKTREE}}`. The
+temporary `{{CHANGE}}` artifacts have been removed; describe the synchronized
+spec diff that remains, not what the plan said it would contain.
 
 ## Write `{{RUN_DIR}}/pr-body.md`
 
@@ -26,7 +26,7 @@ The pull request body. It must include:
 - **User-visible behaviour** — what someone using the product will now be able
   to do, and what changes for them.
 - `Closes #{{ISSUE_NUMBER}}` on its own line, so merging closes the issue.
-- **OpenSpec** — change name, the specs synchronized, and the archive location.
+- **OpenSpec** — change name and the specs synchronized from its deltas.
 - **Implementation notes** — backend and frontend, and the contract between them
   when the change crosses it.
 - **Verification** — the commands that ran and their results. Take these from

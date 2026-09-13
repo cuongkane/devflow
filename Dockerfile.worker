@@ -28,7 +28,7 @@ ARG CLAUDE_CODE_VERSION=2.1.232
 ARG OPENCODE_VERSION=1.18.18
 
 # The implementation pipeline drives OpenSpec directly from shell -- it proposes,
-# validates and archives changes -- so the CLI has to exist in this image. On the
+# validates and synchronizes changes -- so the CLI has to exist in this image. On the
 # host it is a Volta-managed global, which the container cannot see: ~/.volta is
 # not mounted, and mounting it would drag in a macOS toolchain anyway.
 ARG OPENSPEC_VERSION=1.4.1

@@ -42,4 +42,4 @@ re-checked, and you will be called back through the fix loop if it fails. Run
 only the focused checks for what you changed; the full suite is not your job and
 spends your budget on an answer that step will produce anyway.
 
-Do not sync specs, archive, push, or open a pull request.
+Do not finalize specs, push, or open a pull request.

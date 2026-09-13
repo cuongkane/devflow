@@ -67,6 +67,6 @@ reads it: it skips the resolving agent entirely and goes straight to verificatio
 
 ## Boundaries
 
-Do not edit code, tests, specs, or configuration. Do not sync specs, archive,
+Do not edit code, tests, specs, or configuration. Do not finalize specs,
 push, or open a pull request. The only file you write is
 `{{REVIEW_COMMENTS_PATH}}` and your `result.json`.

@@ -1,6 +1,6 @@
 # Coding agent used by every AI-backed DAG. Supported values: codex, claude,
 # opencode.
-agent: opencode
+agent: codex
 
 # Model tier -> concrete model, per agent. DAG steps ask for a tier
 # (fast | standard | deep) rather than a model name, so a DAG stays valid when

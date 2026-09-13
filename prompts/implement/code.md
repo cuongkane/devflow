@@ -31,8 +31,8 @@ cannot change the design to make that possible.
 
 If implementing something invalidates the design, update the proposal, design,
 delta specs or tasks before continuing, and re-validate. Never leave shipped
-behaviour differing from the artifacts — the archive phase merges those artifacts
-into the main specs, so a lie here becomes a lie in the specification.
+behaviour differing from the artifacts — the sync phase merges their deltas into
+the main specs, so a lie here becomes a lie in the specification.
 
 ## Commit as you go
 
@@ -45,8 +45,7 @@ start from real work.
 
 Do not write the tests — that is the `tests` phase, which runs next with its own
 budget and the testing standards loaded. Do not run the full verification suite;
-focused checks only. Do not push, do not open a pull request, do not sync or
-archive specs.
+focused checks only. Do not push, do not open a pull request, or finalize specs.
 
 Your `summary` in `{{RESULT_PATH}}` must say which tasks you implemented and what
 behaviour the next phase has to cover, so it does not have to infer that from the
