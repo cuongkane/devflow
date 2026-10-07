@@ -1,5 +1,5 @@
 type: graph
-description: Repair failed GitHub Actions test suites on open pull requests
+description: Repair pipeline failures, coverage failures and merge conflicts across all open pull requests
 schedule: "7,27,47 * * * *"
 overlap_policy: skip
 worker_selector:
@@ -17,7 +17,6 @@ params:
 steps:
   - id: repair
     working_dir: ${env.PROJECT_WORKSPACE}
-    timeout_sec: 7200
     run: |
       export CI_VERIFY_EXISTING="${params.VERIFY_EXISTING}"
       export CI_PR_NUMBER="${params.PR_NUMBER}"

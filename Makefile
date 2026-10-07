@@ -167,5 +167,5 @@ labels-prune: ## Delete retired labels (agent-per-phase refactor, major/minor sp
 clean: ## Delete run history and logs (keeps DAG definitions)
 	rm -rf data logs && mkdir -p data logs
 
-repair-tests: ## Inspect failed PR tests now (optional PR=505)
+repair-tests: ## Repair all eligible PR pipelines and conflicts (optional PR=505)
 	docker compose exec -T dagu dagu enqueue resolve-failed-tests -- PR_NUMBER=$(PR) VERIFY_EXISTING=$(or $(VERIFY_EXISTING),false)
