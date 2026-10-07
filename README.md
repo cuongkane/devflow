@@ -1,11 +1,11 @@
-# DAGU — four task DAGs, one GitHub issue, one merged pull request
+# DAGU — five task DAGs, one GitHub issue, one merged pull request
 
-File an issue and label it `agent:todo`. Four task DAGs move it the rest of the
+File an issue and label it `agent:todo`. Five task DAGs move it the rest of the
 way: clarify requirements, implement the result — through one of two pipelines,
 depending on what the work turns out to be — then resolve review feedback or tidy
 up after the merge.
 
-Four scheduled DAGs own the lifecycle. Each DAG polls, claims and processes its
+Five scheduled DAGs own the lifecycle. Each DAG polls, claims and processes its
 own work directly; there are no dispatcher or child-agent DAGs. The **issue label
 is the interface between phases** — a phase claims work by taking a label and
 hands it on by setting a different one.
@@ -307,6 +307,7 @@ dags/clarify-task.yaml                   poll -> claim -> clarify + size -> repo
 dags/implement-clarified-task.yaml       the major flow: nine agent phases
 dags/implement-minor-clarified-task.yaml the minor flow: code, tests, verify, ship
 dags/resolve-code-review.yaml            poll -> triage -> respond | finish
+dags/resolve-failed-tests.yaml           poll PR checks -> repair -> verify -> push
 dags/check-health.yaml                   host worker health check
 
 prompts/clarify-issue.md                 the headless prompts, each with its own
@@ -585,7 +586,7 @@ package concurrently is how yarn produces `YN0001: While persisting <cache entry
 **Deterministic phases have no model behind them.** The worktree, the dependency
 install, the verification commands, spec cleanup, the push and the pull request are
 exact, checkable operations. `run-verification.sh` runs the target repository's own
-`make test-ci-migrations`, `make test-ci` and — only when `sweatcharge_fe/`
+`make test-ci-migrations`, `make test-ci-coverage` and — only when `sweatcharge_fe/`
 changed — `yarn lint`, `yarn test:unit` and `yarn build`. Running them from shell
 turns the skill's rule that a frontend build must come from the *final* source
 state into a second step in the graph rather than a promise an agent has to keep
@@ -856,3 +857,56 @@ project configuration. Then run `make labels` for the target repo.
   the clarifier; relabelling to the other ready label overrules just the size. A
   minor run's pull request also says in its body that nothing reviewed it, which
   is the last place the mistake can be caught cheaply.
+
+## Repair failed PR tests
+
+`resolve-failed-tests` polls open PRs at minutes 7, 27 and 47 of each hour.
+It handles one PR per run, including PRs without an agent issue label. It selects
+completed GitHub Actions jobs whose job/workflow name contains `test`, `pytest`,
+`vitest`, `jest`, or `spec`, and whose conclusion is failure or timeout. Drafts,
+forks, closed PRs and PRs with pending checks are excluded. Linked issues being
+implemented or answered are deferred. The scan covers the first 200 open PRs.
+
+The agent reads failed job logs and fixes code in a detached worktree. Shell
+verification runs migrations and the full Django suite, plus frontend lint,
+unit tests and build when frontend files changed or a frontend suite failed.
+Only a passing, clean tree is pushed, using a normal fast-forward push after
+checking the PR is still open at the original head. The next GitHub Actions run
+is the remote verdict; a successful local run is recorded as `pushed`, not CI
+success. No PR is merged and no comments or labels are written by this workflow.
+
+A shared `flock` serializes repairs and review responses for each PR. Each head
+gets at most one attempt, with at most three attempts per PR until all checks
+are observed passing. This also bounds repeated infrastructure or agent failures.
+State and logs persist in `/tmp/dagu-agent/ci/<owner>/<repo>/<PR>/` through the
+existing worker bind mount. Preserve this directory across restarts to retain
+attempt limits. A failed worktree is retained for inspection; successful ones
+are removed. Logs and `outcome.json` explain failures in the Dagu run.
+
+```bash
+make repair-tests          # inspect the queue now
+make repair-tests PR=505   # inspect one PR, respecting the same safety gates
+node --test tests/ci-repair.test.mjs
+```
+
+The schedule becomes active when the running scheduler loads the new DAG.
+To retry an exhausted PR after investigating, remove its `attempts.json` while
+this workflow is stopped. This explicitly resets its attempt budget.
+
+To reverify a committed repair after fixing an infrastructure failure, without
+running the agent again or resetting its attempt budget:
+
+```bash
+make repair-tests PR=505 VERIFY_EXISTING=true
+```
+
+This requires the original PR head, a clean descendant repair commit, and saved
+agent/result state. It runs full verification and checks the live PR head before
+pushing. `verify.checks.log` lists pass/fail per command; failed run output shows
+failed command sections instead of expected errors emitted by passing tests.
+Backend verification includes the same coverage gate as GitHub Actions.
+
+The worker mounts host Codex skills read-only at `/opt/codex-user-skills` and
+links those user skills into its writable Codex skills directory. Codex owns
+`.system` inside the container, so installing built-in skills cannot modify the
+host or fail because the whole skills directory is mounted read-only.

@@ -1,0 +1,24 @@
+type: graph
+description: Repair failed GitHub Actions test suites on open pull requests
+schedule: "7,27,47 * * * *"
+overlap_policy: skip
+worker_selector:
+  host: "true"
+dotenv: ${DAGU_ROOT}/project.env
+params:
+  - name: PR_NUMBER
+    type: string
+    default: ""
+    description: Optional PR to inspect; attempt limits still apply
+  - name: VERIFY_EXISTING
+    type: string
+    default: "false"
+    description: Explicitly reverify a preserved committed repair without invoking the agent
+steps:
+  - id: repair
+    working_dir: ${env.PROJECT_WORKSPACE}
+    timeout_sec: 7200
+    run: |
+      export CI_VERIFY_EXISTING="${params.VERIFY_EXISTING}"
+      export CI_PR_NUMBER="${params.PR_NUMBER}"
+      node "$DAGU_ROOT/scripts/ci/repair.mjs"

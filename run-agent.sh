@@ -52,6 +52,16 @@ model_shown=${model:-<cli default>}
 
 case "$agent" in
   codex)
+    # Keep host skills immutable while Codex installs its own .system skills
+    # into a writable container directory. The Compose mount is source-only.
+    if [ -d /opt/codex-user-skills ]; then
+      skills_dir="${CODEX_HOME:-$HOME/.codex}/skills"
+      mkdir -p "$skills_dir"
+      for skill in /opt/codex-user-skills/*; do
+        [ -e "$skill" ] || continue
+        ln -sfn "$skill" "$skills_dir/$(basename "$skill")"
+      done
+    fi
     # Build the flags as an array: an unset model must contribute no argument at
     # all, and an empty string would be passed as one.
     args=(exec --json --dangerously-bypass-approvals-and-sandbox)

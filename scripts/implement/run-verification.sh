@@ -7,7 +7,7 @@
 # GitHub Actions workflows -- not a guessed subset:
 #
 #   make test-ci-migrations   missing-migration check, disposable stack
-#   make test-ci              the full Django suite, disposable stack
+#   make test-ci-coverage     the full Django suite and coverage gate
 #   make test-ci-down         tear the stack down, always
 #   yarn lint / test:unit / build   in sweatcharge_fe, only if it changed
 #
@@ -43,6 +43,8 @@ base=$("$here/state.sh" get "$run_dir" base)
 log="$run_dir/$label.log"
 verdict="$run_dir/$label.status"
 : > "$log"
+checks="$run_dir/$label.checks.log"
+: > "$checks"
 
 # The verdict goes in a file as well as the exit status, because the step that
 # decides whether to spend a model on fixing a failure is a dagu precondition,
@@ -56,18 +58,23 @@ failed=0
 # `deployments` in every worktree. Two issues verifying at once would then share
 # one stack, and the first `test-ci-down` would tear the other one's containers
 # out from under it. Give each worktree its own project namespace.
-COMPOSE_PROJECT_NAME=swc-$(basename "$worktree" | tr '[:upper:]' '[:lower:]' \
+COMPOSE_PROJECT_NAME=swc-$(printf '%s' "${worktree##*/}" | tr '[:upper:]' '[:lower:]' \
   | tr -c 'a-z0-9_-' '-')
 export COMPOSE_PROJECT_NAME
+
+cleanup() { (cd "$worktree" && make test-ci-down) >> "$log" 2>&1 || true; }
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 step() {
   name=$1
   shift
   printf '\n=== %s ===\n' "$name" | tee -a "$log"
   if (cd "$worktree" && "$@") >> "$log" 2>&1; then
-    printf '%-24s PASS\n' "$name"
+    printf '%-24s PASS\n' "$name" | tee -a "$checks"
   else
-    printf '%-24s FAIL\n' "$name"
+    printf '%-24s FAIL\n' "$name" | tee -a "$checks"
     failed=1
   fi
 }
@@ -76,7 +83,7 @@ printf 'worktree: %s\n' "$worktree"
 printf 'log:      %s\n\n' "$log"
 
 step "backend migrations" make test-ci-migrations
-step "backend tests" make test-ci
+step "backend coverage" make test-ci-coverage
 
 # Teardown is best-effort and must run even when the suite failed, or the next
 # run inherits a half-up stack.
@@ -120,6 +127,25 @@ printf 'summary:  %s (%s bytes)\n' \
 if [ "$failed" -ne 0 ]; then
   echo
   echo "[$label] verification failed; see $log" >&2
+  # Passing frontend tests emit many expected errors. Keep the command verdicts
+  # and the beginning/end of each failed section in the agent-facing summary.
+  {
+    cat "$checks"
+    awk '
+      FNR == NR { if ($NF == "FAIL") { sub(/ +FAIL$/, ""); bad["=== " $0 " ==="] = 1 }; next }
+      /^=== / { section = $0; next }
+      bad[section] { lines[section, ++count[section]] = $0 }
+      END {
+        for (section in bad) {
+          print section
+          for (i = 1; i <= count[section]; i++) {
+            if (i <= 12 || i > count[section] - 68) print lines[section, i]
+            else if (i == 13) print "[section truncated; see full log]"
+          }
+        }
+      }
+    ' "$checks" "$log"
+  } > "$run_dir/$label.summary.log"
   cat "$run_dir/$label.summary.log" >&2
   exit 1
 fi

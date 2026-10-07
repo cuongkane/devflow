@@ -97,6 +97,12 @@ steps:
       - condition: 'test "${ACTION}" = "respond"'
     run: |
       set -u
+      mkdir -p "/tmp/dagu-agent/pr-locks/${env.PROJECT_REPO}"
+      exec 9>"/tmp/dagu-agent/pr-locks/${env.PROJECT_REPO}/${PR_NUMBER}.lock"
+      if ! flock -n 9; then
+        echo no
+        exit 0
+      fi
       if ${consts.scripts_dir}/relabel.sh "${env.PROJECT_REPO}" "${ISSUE_NUMBER}" agent:reviewing agent:responding; then
         echo yes
       else
@@ -116,6 +122,8 @@ steps:
       interval_sec: 0
     run: |
       set -u
+      exec 9>"/tmp/dagu-agent/pr-locks/${env.PROJECT_REPO}/${PR_NUMBER}.lock"
+      flock 9
       RUN_DIR="/tmp/dagu-agent/${ISSUE_NUMBER}/review"
       export RUN_DIR
       started=$(date +%s)

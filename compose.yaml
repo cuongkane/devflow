@@ -106,7 +106,7 @@ services:
       # their CLIs can refresh tokens; configuration and skills are read-only.
       - ${HOME}/.codex/auth.json:/root/.codex/auth.json
       - ${HOME}/.codex/config.toml:/root/.codex/config.toml:ro
-      - ${HOME}/.codex/skills:/root/.codex/skills:ro
+      - ${HOME}/.codex/skills:/opt/codex-user-skills:ro
       - ${HOME}/.codex/plugins:/root/.codex/plugins:ro
       # The configured SweatCharge skills are symlinks into this repository.
       - ${DOTFILES_DIR}:${DOTFILES_DIR}:ro
