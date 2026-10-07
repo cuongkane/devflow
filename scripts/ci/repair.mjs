@@ -39,9 +39,13 @@ function write(file, data) {
 }
 const view = (repo, n) => JSON.parse(gh(['pr', 'view', n, '--repo', repo, '--json', fields]));
 export function listOpenPullRequests(repo, request = gh, inspect = view) {
-  const pages = JSON.parse(request(['api', '--paginate', '--slurp',
-    `repos/${repo}/pulls?state=open&per_page=100`]));
-  return pages.flat().map(pr => inspect(repo, pr.number));
+  // Older worker gh versions support --paginate and --jq, but not --slurp.
+  const numbers = request(['api', '--paginate',
+    `repos/${repo}/pulls?state=open&per_page=100`, '--jq', '.[].number']);
+  return numbers.trim().split(/\s+/).filter(Boolean).map(number => {
+    if (!/^\d+$/.test(number)) throw new Error('Invalid PR number in paginated response');
+    return inspect(repo, Number(number));
+  });
 }
 
 // Keep HEAD unchanged for the agent; the orchestrator commits the resolved merge.
