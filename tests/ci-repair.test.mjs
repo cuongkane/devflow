@@ -53,15 +53,22 @@ test('all open PR pages are inspected, including PRs after the old 200 limit', (
   const inspected = [];
   const prs = listOpenPullRequests('o/r', args => {
     requests.push(args);
-    return JSON.stringify(pages);
+    return pages.map(page => page.map(pr => pr.number).join('\n')).join('\n') + '\n';
   }, (repo, number) => {
     assert.equal(repo, 'o/r');
     inspected.push(number);
     return {...pr, number};
   });
-  assert.deepEqual(requests, [['api', '--paginate', '--slurp', 'repos/o/r/pulls?state=open&per_page=100']]);
+  assert.deepEqual(requests, [['api', '--paginate', 'repos/o/r/pulls?state=open&per_page=100', '--jq', '.[].number']]);
   assert.equal(prs.length, 300);
   assert.equal(inspected.at(-1), 300);
+});
+test('an empty paginated result does not inspect any PRs', () => {
+  assert.deepEqual(listOpenPullRequests('o/r', () => '\n', () => assert.fail('unexpected inspection')), []);
+});
+test('malformed paginated PR numbers fail before inspection', () => {
+  assert.throws(() => listOpenPullRequests('o/r', () => 'invalid', () => assert.fail('unexpected inspection')),
+    /Invalid PR number/);
 });
 test('attempted heads and exhausted budgets cannot retrigger or starve other PRs', () => {
   assert.equal(eligible(pr, {heads: ['abc'], attempts: 1}), false);
@@ -130,7 +137,10 @@ if (args[0] === 'pr') {
   console.log(JSON.stringify({...${JSON.stringify({...pr, headRefName: 'feature', baseRefName: 'main'})}, number: Number(args[2])}));
 } else if (args.includes('graphql')) {
   console.log(JSON.stringify({data: {repository: {pullRequest: {closingIssuesReferences: {nodes: []}}}}}));
-} else { console.log(JSON.stringify([[{number: 1}, {number: 2}, {number: 3}]])); }
+} else {
+  if (args.includes('--slurp') || args[args.indexOf('--jq') + 1] !== '.[].number') process.exit(1);
+  console.log('1\\n2\\n3');
+}
 `, {mode: 0o755});
     fs.writeFileSync(path.join(dir, 'flock'), `#!/usr/bin/env node
 const fs = require('node:fs');
