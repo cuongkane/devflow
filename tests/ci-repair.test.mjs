@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {execFileSync, spawnSync} from 'node:child_process';
-import {failures, eligible, assertPushable, listOpenPullRequests, prepareMerge} from '../scripts/ci/repair.mjs';
+import {failures, eligible, assertPushable, listOpenPullRequests, prepareMerge, quotaAvailable} from '../scripts/ci/repair.mjs';
 const check = {__typename: 'CheckRun', name: 'Django test suite', workflowName: 'Backend Tests',
   status: 'COMPLETED', conclusion: 'FAILURE', detailsUrl: 'https://github.com/o/r/actions/runs/123/job/456'};
 const pr = {state: 'OPEN', isDraft: false, isCrossRepository: false, headRefOid: 'abc', statusCheckRollup: [check]};
@@ -37,8 +37,8 @@ test('merge conflicts qualify without failed jobs, even with missing or pending 
     for (const conflict of [{mergeable: 'CONFLICTING'}, {mergeStateStatus: 'DIRTY'}]) {
       const candidate = {...pr, ...conflict, statusCheckRollup};
       assert.equal(eligible(candidate, {}), true);
-      assert.equal(eligible(candidate, {heads: ['abc']}), false);
-      assert.equal(eligible(candidate, {attempts: 3}), false);
+      assert.equal(eligible(candidate, {heads: ['abc'], attempts: 1}), true);
+      assert.equal(eligible(candidate, {attempts: 4}), false);
       for (const override of [{state: 'CLOSED'}, {isDraft: true}, {isCrossRepository: true}]) {
         assert.equal(eligible({...candidate, ...override}, {}), false);
       }
@@ -70,10 +70,15 @@ test('malformed paginated PR numbers fail before inspection', () => {
   assert.throws(() => listOpenPullRequests('o/r', () => 'invalid', () => assert.fail('unexpected inspection')),
     /Invalid PR number/);
 });
-test('attempted heads and exhausted budgets cannot retrigger or starve other PRs', () => {
-  assert.equal(eligible(pr, {heads: ['abc'], attempts: 1}), false);
+test('failed heads can retry three times and exhausted PRs cannot starve other PRs', () => {
+  for (const attempts of [1, 2, 3]) assert.equal(eligible(pr, {heads: ['abc'], attempts}), true);
   assert.equal(eligible({...pr, headRefOid: 'def'}, {heads: ['abc'], attempts: 1}), true);
-  assert.equal(eligible({...pr, headRefOid: 'def'}, {heads: ['abc'], attempts: 3}), false);
+  assert.equal(eligible({...pr, headRefOid: 'def'}, {heads: ['abc'], attempts: 4}), false);
+});
+test('PR quota deferrals and lookup failures are distinct', () => {
+  assert.equal(quotaAvailable(() => {}), true);
+  assert.equal(quotaAvailable(() => { throw {status: 75}; }), false);
+  assert.throws(() => quotaAvailable(() => { throw new Error('quota lookup failed'); }), /quota lookup failed/);
 });
 test('missing checks are idle', () => assert.equal(eligible({...pr, statusCheckRollup: null}, {}), false));
 
@@ -131,6 +136,11 @@ test('a failed repair does not stop the remaining PRs in the poll', () => {
   const stateDir = `/tmp/dagu-agent/ci/${repo}`;
   const lockDir = `/tmp/dagu-agent/pr-locks/${repo}`;
   try {
+    fs.writeFileSync(path.join(dir, 'codex'), `#!/usr/bin/env node
+require('node:readline').createInterface({input: process.stdin}).on('line', line => {
+  if (JSON.parse(line).id === 2) console.log(JSON.stringify({id: 2, result: {rateLimits: {primary: {usedPercent: 0}}}}));
+});
+`, {mode: 0o755});
     fs.writeFileSync(path.join(dir, 'gh'), `#!/usr/bin/env node
 const args = process.argv.slice(2);
 if (args[0] === 'pr') {

@@ -60,19 +60,19 @@ steps:
     preconditions:
       - condition: 'test "${ISSUE_NUMBER}" != "none"'
     run: |
-      set -u
-      if ${consts.scripts_dir}/relabel.sh "${env.PROJECT_REPO}" "${ISSUE_NUMBER}" agent:todo agent:clarifying; then
-        echo "[claim] #${ISSUE_NUMBER}: agent:todo -> agent:clarifying" >&2
-        echo yes
-      else
-        echo "[claim] #${ISSUE_NUMBER}: skipped because its state changed" >&2
-        echo no
-      fi
+      ${consts.scripts_dir}/claim-clarify-issue.sh "${env.PROJECT_REPO}" "${ISSUE_NUMBER}"
     output: CLAIMED
     continue_on: skipped
 
-  - id: fetch_issue
+  - id: record_attempt
     depends: claim
+    preconditions:
+      - condition: 'test "${CLAIMED}" = "yes"'
+    continue_on: skipped
+    run: node "${DAGU_ROOT}/scripts/retry-failed-issues.mjs" start "${env.PROJECT_REPO}" "${ISSUE_NUMBER}" clarify "${context.run.id}"
+
+  - id: fetch_issue
+    depends: record_attempt
     preconditions:
       - condition: 'test "${CLAIMED}" = "yes"'
     continue_on: skipped
@@ -122,7 +122,7 @@ steps:
         + (if (.comments | length) == 0 then ""
            else "\n---\n\n## Thread\n\n"
                 + ([.comments[]
-                    | select(.body | test("<!-- agent:(brief|questions) -->") | not)
+                    | select(.body | test("<!-- agent:(brief|questions) -->|<!-- agent:retry-state ") | not)
                     | "### \(.author.login) at \(.createdAt)\n\n\(.body)"]
                    | join("\n\n"))
            end)
@@ -211,21 +211,14 @@ steps:
       EOF
           ;;
         *)
-          state="agent:failed"
-          reason=$(jq -r '.error // ""' "$result" 2>/dev/null || echo "")
-          [ -n "$reason" ] || reason="The agent wrote no result.json. It was most likely killed or timed out after 30m. Check agent-stream.jsonl."
-          cat > "$body" <<EOF
-      Clarification run \`${context.run.id}\` did not complete.
-
-      $reason
-
-      Working files: \`$RUN_DIR\`
-      EOF
+          node "${DAGU_ROOT}/scripts/retry-failed-issues.mjs" fail "${env.PROJECT_REPO}" "${ISSUE_NUMBER}" clarify "${context.run.id}" "${context.paths.log_file}"
+          exit 1
           ;;
       esac
 
       gh issue comment "${ISSUE_NUMBER}" --repo "${env.PROJECT_REPO}" --body-file "$body"
       ${consts.scripts_dir}/set-state.sh "${env.PROJECT_REPO}" "${ISSUE_NUMBER}" "$state"
+      node "${DAGU_ROOT}/scripts/retry-failed-issues.mjs" complete "${env.PROJECT_REPO}" "${ISSUE_NUMBER}" clarify "${context.run.id}"
 
       started=$(cat "$RUN_DIR/started_at" 2>/dev/null || date +%s)
       elapsed=$(( $(date +%s) - started ))
@@ -254,9 +247,5 @@ handler_on:
   # clarify poller never sees it again.
   failure:
     run: |
-      if gh issue view "${ISSUE_NUMBER}" --repo "${env.PROJECT_REPO}" \
-           --json labels --jq '.labels[].name' | grep -qx "agent:clarifying"; then
-        ${consts.scripts_dir}/set-state.sh "${env.PROJECT_REPO}" "${ISSUE_NUMBER}" "agent:failed"
-        gh issue comment "${ISSUE_NUMBER}" --repo "${env.PROJECT_REPO}" \
-          --body "Clarification run \`${context.run.id}\` failed before reporting. Log: ${context.paths.log_file}"
-      fi
+      case "${ISSUE_NUMBER}" in ''|none|*[!0-9]*) exit 0 ;; esac
+      node "${DAGU_ROOT}/scripts/retry-failed-issues.mjs" fail "${env.PROJECT_REPO}" "${ISSUE_NUMBER}" clarify "${context.run.id}" "${context.paths.log_file}"

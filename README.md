@@ -204,7 +204,7 @@ the schedule and history; the `worker` service does all the work.
 | `agent:reviewing` | **you** | A pull request is open and ready for your review. |
 | `agent:responding` | responder | Your review comments are being addressed. |
 | `agent:finished` | terminal | Merged, issue closed, worktree reclaimed. |
-| `agent:failed` | **you** | A run broke. The comment says where. |
+| `agent:failed` | retry poller, then **you** | A run broke. The report names the workflow, phase and error. Up to three retries are queued automatically. |
 
 ### The label is the lock
 
@@ -326,8 +326,10 @@ prompts/standards/                       the engineering practices and testing
 
 scripts/standards.sh                     print the standards appendix for a prompt
 scripts/relabel.sh                       guarded claim: swap FROM -> TO
-scripts/codex-usage-available.sh         defer an implementation claim when any
+scripts/codex-usage-available.sh         defer AI work when any
                                          Codex quota window has <10% remaining
+scripts/retry-failed-issues.mjs          record workflow failures and requeue up
+                                         to three retries, preserving evidence
 scripts/set-state.sh                     unguarded report: force exactly one state
 scripts/pick-oldest.sh                   read a queue label, pick the oldest issue
 scripts/triage-issue.sh                  issue -> pull request -> decision
@@ -723,6 +725,28 @@ provides.
 
 ## Unsticking a killed run
 
+`retry-failed-issues` scans every open issue labelled `agent:failed` at minutes
+2, 12, 22, 32, 42 and 52. It returns failed clarification to `agent:todo` and
+failed implementation to its original major or minor ready queue. Existing
+failures are identified from their newest failure report; implementation size
+comes from saved run state, falling back to major when unavailable. Unknown
+failures, closed issues and issues waiting for human answers are left alone.
+
+Each issue gets **three automatic retries after its initial run**, shared across
+clarification and implementation. Success at clarification preserves the count;
+successful implementation resets it. After exhaustion the issue stays failed
+with a report saying all three retries were used. Retry counts persist under
+`/tmp/dagu-agent/retries/<owner>/<repo>/` and in issue comment markers. Interrupted
+relabels resume the same retry rather than spending another. Quota deferrals do
+not consume retries. Failed phase files are archived under
+`/tmp/dagu-agent/<issue>/history/` before rerunning, while worktrees keep their
+changes. Delivery reuses an existing open PR if an earlier attempt already
+created it.
+
+Failure reports distinguish clarification, major implementation and minor
+implementation, and include structured agent errors such as usage-limit errors
+when available. `make retry-failed` runs the retry scan immediately.
+
 Each agent DAG has a failure handler that moves a working label to `agent:failed`
 if the run dies, so a stuck issue should be rare. If one is genuinely pinned to
 `agent:clarifying`, `agent:implementing` or `agent:responding` with no run behind
@@ -838,8 +862,9 @@ project configuration. Then run `make labels` for the target repo.
   pull request merges and `finish_merged` removes the worktree outright. This is
   the same hole `reclaim-stranded.sh` closes for labels, and nothing sweeps it
   for disk: if the worker is being killed often, check free space by hand.
-- **Codex keeps 10% quota headroom.** Before either implementer changes a ready
-  label to `agent:implementing`, it reads Codex's account rate-limit snapshot.
+- **Codex keeps 10% quota headroom.** Before clarification or either implementer
+  claims an issue, the retry poller requeues failed work, or PR repair spends an
+  attempt, it reads Codex's account rate-limit snapshot.
   If any reported rolling window has less than 10% remaining, the run completes
   without claiming the issue; the unchanged ready label lets the next scheduled
   poll retry it. Claude and opencode bypass this gate. A failed quota lookup is
@@ -883,9 +908,12 @@ the target branch has not advanced during verification. The next GitHub Actions 
 is the remote verdict; a successful local run is recorded as `pushed`, not CI
 success. No PR is merged and no comments or labels are written by this workflow.
 
-A shared `flock` serializes repairs and review responses for each PR. Each head
-gets at most one attempt, with at most three attempts per PR until all checks
-are observed passing. This also bounds repeated infrastructure or agent failures.
+A shared `flock` serializes repairs and review responses for each PR. Each PR
+gets an initial attempt and at most three retries until all checks are observed
+passing. Failed repairs can retry the same head, and each attempt has its own
+directory and worktree, preserving earlier failures. The Codex quota gate runs
+before consuming an attempt, so usage-limit deferrals do not exhaust the budget.
+This also bounds repeated infrastructure or agent failures.
 State and logs persist in `/tmp/dagu-agent/ci/<owner>/<repo>/<PR>/` through the
 existing worker bind mount. Preserve this directory across restarts to retain
 attempt limits. A failed worktree is retained for inspection; successful ones

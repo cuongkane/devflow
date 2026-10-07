@@ -21,9 +21,8 @@ scripts_dir=$(cd "$(dirname "$0")/.." && pwd)
 labels=$(gh issue view "$issue" --repo "$repo" --json labels --jq '.labels[].name')
 
 if printf '%s\n' "$labels" | grep -qx agent:implementing; then
-  "$scripts_dir/set-state.sh" "$repo" "$issue" agent:failed
-  gh issue comment "$issue" --repo "$repo" \
-    --body "Implementation run \`$run_id\` failed before reporting. Log: $log_file"
+  size=$("$scripts_dir/implement/state.sh" get-or "/tmp/dagu-agent/$issue/implement" size major)
+  node "$scripts_dir/retry-failed-issues.mjs" fail "$repo" "$issue" "$size" "$run_id" "$log_file"
   exit 1
 fi
 

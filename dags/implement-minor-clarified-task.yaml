@@ -86,10 +86,15 @@ steps:
   # state.json, and it is how the phases themselves find out which flow they are
   # in. Nothing infers the flow from the DAG it is running under, because the
   # scripts are shared and `make phase` can re-run any of them by hand.
-  - id: fetch_issue_brief
+  - id: record_attempt
     depends: claim_ready_issue
     preconditions: &claimed
       - condition: 'test "${claim_ready_issue.output.claimed}" = "true"'
+    run: node "${DAGU_ROOT}/scripts/retry-failed-issues.mjs" start "${env.PROJECT_REPO}" "${claim_ready_issue.output.issue_number}" minor "${context.run.id}"
+
+  - id: fetch_issue_brief
+    depends: record_attempt
+    preconditions: *claimed
     working_dir: ${env.PROJECT_WORKSPACE}
     continue_on: &carry_on
       failure: true            # report the outcome on the issue either way
@@ -267,6 +272,11 @@ steps:
 # See implement-clarified-task.yaml for why this is an exit handler and not a
 # step, and reclaim-workspace.sh for what it does and does not delete.
 handler_on:
+  failure:
+    run: |
+      issue="${claim_ready_issue.output.issue_number}"
+      case "$issue" in ''|*[!0-9]*) exit 0 ;; esac
+      node "${DAGU_ROOT}/scripts/retry-failed-issues.mjs" fail "${env.PROJECT_REPO}" "$issue" minor "${context.run.id}" "${context.paths.log_file}"
   exit:
     run: >
       ${consts.impl}/reclaim-workspace.sh

@@ -113,7 +113,13 @@ defer=no
 while IFS=$'\t' read -r name remaining used duration resets_at; do
   printf '[usage] Codex %s window: %s%% remaining (%s%% used, duration=%s, resets_at=%s)\n' \
     "$name" "$remaining" "$used" "$duration" "$resets_at" >&2
-  if [ "$remaining" -lt "$minimum_remaining" ]; then
+  # Percentages may be fractional; shell integer comparisons can silently pass
+  # a 9.5% window after printing "integer expression expected".
+  if ! printf '%s\n' "$remaining" | awk '/^[0-9]+([.][0-9]+)?$/ { ok = 1 } END { exit !ok }'; then
+    printf '[usage] invalid remaining percentage: %s\n' "$remaining" >&2
+    exit 1
+  fi
+  if awk -v remaining="$remaining" -v minimum="$minimum_remaining" 'BEGIN { exit !(remaining < minimum) }'; then
     defer=yes
   fi
 done <<< "$windows"

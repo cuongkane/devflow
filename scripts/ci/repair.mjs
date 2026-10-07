@@ -2,6 +2,7 @@ import {execFileSync} from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
+import {agentError} from '../retry-failed-issues.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const fields = 'number,title,state,isDraft,isCrossRepository,headRefName,headRefOid,baseRefName,mergeable,mergeStateStatus,statusCheckRollup';
@@ -17,8 +18,15 @@ export function failures(pr) {
     /\/actions\/runs\/\d+\/job\/\d+/.test(c.detailsUrl ?? ''));
 }
 export function eligible(pr, state) {
-  return (conflicted(pr) || failures(pr).length > 0) && !(state.heads ?? []).includes(pr.headRefOid) &&
-    (state.attempts ?? 0) < 3;
+  // Initial attempt plus three retries, including failures on the same head.
+  return (conflicted(pr) || failures(pr).length > 0) && (state.attempts ?? 0) < 4;
+}
+export function quotaAvailable(check = () => run(path.join(root, 'scripts/codex-usage-available.sh'), ['10'], {stdio: 'inherit'})) {
+  try { check(); return true; } catch (error) {
+    if (error.status !== 75) throw error;
+    console.log('PR repairs deferred: less than 10% Codex quota remains');
+    return false;
+  }
 }
 export function assertPushable(original, fresh, dirty) {
   if (dirty) throw new Error('Verification changed the source tree');
@@ -108,15 +116,18 @@ function repair(repo, workspace, dir, number) {
     console.log(`PR #${number}: linked issue is being edited; deferring`);
     return;
   }
+  if (!resume && !quotaAvailable()) return;
   // Consume before invoking external work: crashes must not spend again forever.
   if (!resume) {
     state.heads = [...(state.heads ?? []), pr.headRefOid];
     state.attempts = (state.attempts ?? 0) + 1;
+    state.lastAttempt = state.attempts;
     write(stateFile, state);
   }
-  const attempt = path.join(dir, pr.headRefOid);
+  const suffix = state.lastAttempt ? `-attempt-${state.lastAttempt}` : '';
+  const attempt = path.join(dir, `${pr.headRefOid}${suffix}`);
   fs.mkdirSync(attempt, {recursive: true});
-  const worktree = path.join(`${workspace}-worktrees`, `ci-pr-${number}-${pr.headRefOid.slice(0, 12)}`);
+  const worktree = path.join(`${workspace}-worktrees`, `ci-pr-${number}-${pr.headRefOid.slice(0, 12)}${suffix}`);
   const git = args => run('git', ['-C', worktree, ...args]);
   let created = false;
   try {
@@ -178,8 +189,10 @@ function repair(repo, workspace, dir, number) {
     verifyAndPush(pr, repo, workspace, worktree, attempt, git);
     created = false;
   } catch (error) {
-    write(path.join(attempt, 'outcome.json'), {status: 'failed', error: error.message, worktree});
-    console.error(`PR #${number}: ${error.message}; artifacts: ${attempt}`);
+    const stream = path.join(attempt, 'agent-stream.jsonl');
+    const reason = agentError(fs.existsSync(stream) ? fs.readFileSync(stream, 'utf8') : '') || error.message;
+    write(path.join(attempt, 'outcome.json'), {status: 'failed', error: reason, worktree});
+    console.error(`PR #${number}: ${reason}; artifacts: ${attempt}`);
     process.exitCode = 1;
   } finally {
     // Reclaim bulky dependencies but preserve failed edits and commits for inspection.
@@ -202,6 +215,7 @@ function main() {
   }
   const prs = selected ? [view(repo, selected)] : listOpenPullRequests(repo);
   let attempted = 0;
+  let checkedQuota = false;
   for (const pr of prs.sort((a, b) => a.number - b.number)) {
     const dir = path.join(home, String(pr.number));
     fs.mkdirSync(dir, {recursive: true});
@@ -214,6 +228,10 @@ function main() {
     }
     if (process.env.CI_VERIFY_EXISTING !== 'true' && !eligible(pr, state)) continue;
     if (busyIssue(repo, pr.number)) continue;
+    if (process.env.CI_VERIFY_EXISTING !== 'true' && !checkedQuota) {
+      if (!quotaAvailable()) return;
+      checkedQuota = true;
+    }
     const lock = `/tmp/dagu-agent/pr-locks/${repo}/${pr.number}.lock`;
     fs.mkdirSync(path.dirname(lock), {recursive: true});
     try {

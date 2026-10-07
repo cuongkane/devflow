@@ -1,0 +1,11 @@
+type: graph
+description: Requeue failed clarification and implementation workflows, up to three retries per issue
+schedule: "2,12,22,32,42,52 * * * *"
+overlap_policy: skip
+worker_selector:
+  host: "true"
+dotenv: ${DAGU_ROOT}/project.env
+steps:
+  - id: retry_failed_issues
+    working_dir: ${env.PROJECT_WORKSPACE}
+    run: node "${DAGU_ROOT}/scripts/retry-failed-issues.mjs" scan "${env.PROJECT_REPO}"

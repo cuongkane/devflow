@@ -1,7 +1,7 @@
 .DEFAULT_GOAL := help
 .PHONY: help up down restart logs ps open worker validate health state \
         clarify implement implement-minor phase verify usage respond close \
-        labels labels-prune clean repair-tests
+        labels labels-prune clean repair-tests retry-failed
 
 # Host-side dagu CLI reads this project rather than ~/.config/dagu.
 export DAGU_HOME := $(CURDIR)
@@ -150,7 +150,7 @@ labels: ## Create the agent:* labels on $(REPO) (idempotent)
 	@gh label create "agent:finished"           --repo $(REPO) --color CFD3D7 --force \
 		--description "Pull request merged and the worktree reclaimed"
 	@gh label create "agent:failed"             --repo $(REPO) --color B60205 --force \
-		--description "A run broke; the comment says where"
+		--description "A run broke; report shows workflow and error; up to 3 automatic retries"
 
 labels-prune: ## Delete retired labels (agent-per-phase refactor, major/minor split)
 	@echo "This removes agent:in-progress, agent:done, agent:needs-input and"
@@ -169,3 +169,6 @@ clean: ## Delete run history and logs (keeps DAG definitions)
 
 repair-tests: ## Repair all eligible PR pipelines and conflicts (optional PR=505)
 	docker compose exec -T dagu dagu enqueue resolve-failed-tests -- PR_NUMBER=$(PR) VERIFY_EXISTING=$(or $(VERIFY_EXISTING),false)
+
+retry-failed: ## Requeue failed clarification/implementation issues, up to three retries
+	docker compose exec -T dagu dagu enqueue retry-failed-issues

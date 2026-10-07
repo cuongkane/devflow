@@ -63,8 +63,17 @@ git push -u origin "$branch"
 # delivery poller will keep re-inspecting it forever.
 grep -q "Closes #$issue" "$body" || printf '\nCloses #%s\n' "$issue" >> "$body"
 
-url=$(gh pr create --repo "$repo" --base "$base_branch" --head "$branch" \
-  --title "$title" --body-file "$body")
+# A prior attempt may have opened the PR before dying while saving/reporting it.
+# Reuse that PR on retry rather than failing every time with "already exists".
+existing=$(gh pr list --repo "$repo" --state open --head "$branch" --json url,baseRefName)
+url=$(printf '%s' "$existing" | jq -r --arg base "$base_branch" \
+  '[.[] | select(.baseRefName == $base)] | .[0].url // empty')
+if [ -z "$url" ]; then
+  url=$(gh pr create --repo "$repo" --base "$base_branch" --head "$branch" \
+    --title "$title" --body-file "$body")
+else
+  echo "[deliver] reusing the existing pull request: $url"
+fi
 
 # Take the URL from GitHub's own output and never construct one: the number in it
 # is what the review-response DAG follows, and a predicted number strands the issue.

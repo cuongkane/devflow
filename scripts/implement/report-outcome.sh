@@ -91,25 +91,9 @@ EOF
 esac
 
 if [ "$outcome" = failed ]; then
-  state="agent:failed"
-
-  reason=$(jq -r '.error // empty' "$run_dir/$phase/result.json" 2>/dev/null || true)
-  [ -n "$reason" ] || reason="The agent wrote no result.json for this phase. It was most likely killed, timed out, or exhausted its budget."
-
-  {
-    printf 'Implementation run `%s` did not complete.\n\n' "$run_id"
-    printf 'It stopped in the **%s** phase.\n\n' "$phase"
-    printf '%s\n\n' "$reason"
-    printf 'Phases that finished:\n\n'
-    for result in "$run_dir"/*/result.json; do
-      [ -f "$result" ] || continue
-      printf -- '- `%s` — %s\n' \
-        "$(basename "$(dirname "$result")")" \
-        "$(jq -r '.status // "unknown"' "$result" 2>/dev/null || echo unreadable)"
-    done
-    printf '\nThe worktree is left in place so the next attempt can see how far this one got.\n\n'
-    printf 'Worktree: `%s`\nWorking files: `%s`\n' "$worktree" "$run_dir"
-  } > "$body"
+  size=$("$here/state.sh" get-or "$run_dir" size major)
+  node "$scripts_dir/retry-failed-issues.mjs" fail "$repo" "$issue" "$size" "$run_id" "$log_file"
+  exit 1
 fi
 
 # The accounting table, collapsed, on every outcome. A failed run is exactly when
@@ -126,6 +110,8 @@ fi
 
 gh issue comment "$issue" --repo "$repo" --body-file "$body"
 "$scripts_dir/set-state.sh" "$repo" "$issue" "$state"
+size=$("$here/state.sh" get-or "$run_dir" size major)
+node "$scripts_dir/retry-failed-issues.mjs" complete "$repo" "$issue" "$size" "$run_id"
 
 started=$(cat "$run_dir/started_at" 2>/dev/null || date +%s)
 elapsed=$(( $(date +%s) - started ))

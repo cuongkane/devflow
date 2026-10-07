@@ -77,10 +77,15 @@ steps:
 
   # Everything below is gated on the claim. An idle poll -- the common case, ten
   # times an hour -- costs one `gh` call and stops here.
-  - id: fetch_issue_brief
+  - id: record_attempt
     depends: claim_ready_issue
     preconditions: &claimed
       - condition: 'test "${claim_ready_issue.output.claimed}" = "true"'
+    run: node "${DAGU_ROOT}/scripts/retry-failed-issues.mjs" start "${env.PROJECT_REPO}" "${claim_ready_issue.output.issue_number}" major "${context.run.id}"
+
+  - id: fetch_issue_brief
+    depends: record_attempt
+    preconditions: *claimed
     working_dir: ${env.PROJECT_WORKSPACE}
     continue_on: &carry_on
       failure: true            # report the outcome on the issue either way
@@ -380,6 +385,11 @@ steps:
 # resolve-code-review.yaml answers review comments in that same worktree days
 # later. The worktree itself is reclaimed on merge, by `finish_merged`.
 handler_on:
+  failure:
+    run: |
+      issue="${claim_ready_issue.output.issue_number}"
+      case "$issue" in ''|*[!0-9]*) exit 0 ;; esac
+      node "${DAGU_ROOT}/scripts/retry-failed-issues.mjs" fail "${env.PROJECT_REPO}" "$issue" major "${context.run.id}" "${context.paths.log_file}"
   exit:
     run: >
       ${consts.impl}/reclaim-workspace.sh
