@@ -858,20 +858,28 @@ project configuration. Then run `make labels` for the target repo.
   minor run's pull request also says in its body that nothing reviewed it, which
   is the last place the mistake can be caught cheaply.
 
-## Repair failed PR tests
+## Repair PR pipelines and merge conflicts
 
 `resolve-failed-tests` polls open PRs at minutes 7, 27 and 47 of each hour.
-It handles one PR per run, including PRs without an agent issue label. It selects
-completed GitHub Actions jobs whose job/workflow name contains `test`, `pytest`,
-`vitest`, `jest`, or `spec`, and whose conclusion is failure or timeout. Drafts,
-forks, closed PRs and PRs with pending checks are excluded. Linked issues being
-implemented or answered are deferred. The scan covers the first 200 open PRs.
+It paginates every open PR in the configured repository and processes all eligible
+PRs sequentially per run, including PRs without an agent issue label. One failed
+repair does not stop the remaining PRs. It selects completed GitHub Actions jobs
+whose conclusion is failure or timeout, regardless of job name: tests, coverage,
+lint, builds and other pipeline jobs all qualify. Merge conflicts also qualify
+when checks are missing, passing or pending. Drafts, forks and closed PRs are
+excluded; pipeline repairs wait for pending checks. Linked issues being
+implemented or answered are deferred.
 
-The agent reads failed job logs and fixes code in a detached worktree. Shell
+The agent reads failed job logs and fixes code in a detached worktree. For a
+conflicted PR, the orchestrator starts merging the fetched target branch without
+committing; the agent resolves conflicts and the orchestrator commits the merge.
+Coverage failures require meaningful tests or repaired coverage generation,
+without lowering thresholds or excluding source files. Shell
 verification runs migrations and the full Django suite, plus frontend lint,
 unit tests and build when frontend files changed or a frontend suite failed.
 Only a passing, clean tree is pushed, using a normal fast-forward push after
-checking the PR is still open at the original head. The next GitHub Actions run
+checking the PR is still open at the original head and target branch, and that
+the target branch has not advanced during verification. The next GitHub Actions run
 is the remote verdict; a successful local run is recorded as `pushed`, not CI
 success. No PR is merged and no comments or labels are written by this workflow.
 

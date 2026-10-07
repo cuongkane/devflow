@@ -4,25 +4,27 @@ import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
-const fields = 'number,title,state,isDraft,isCrossRepository,headRefName,headRefOid,baseRefName,statusCheckRollup';
-const testName = /test|pytest|vitest|jest|spec/i;
+const fields = 'number,title,state,isDraft,isCrossRepository,headRefName,headRefOid,baseRefName,mergeable,mergeStateStatus,statusCheckRollup';
+const writable = pr => pr.state === 'OPEN' && !pr.isDraft && !pr.isCrossRepository;
+export const conflicted = pr => writable(pr) &&
+  (pr.mergeable === 'CONFLICTING' || pr.mergeStateStatus === 'DIRTY');
 export function failures(pr) {
   const checks = pr.statusCheckRollup ?? [];
-  if (pr.state !== 'OPEN' || pr.isDraft || pr.isCrossRepository ||
+  if (!writable(pr) ||
       checks.some(c => c.status ? c.status !== 'COMPLETED' : c.state === 'PENDING')) return [];
   return checks.filter(c => c.__typename === 'CheckRun' &&
     ['FAILURE', 'TIMED_OUT'].includes(c.conclusion) &&
-    testName.test(`${c.name} ${c.workflowName}`) &&
     /\/actions\/runs\/\d+\/job\/\d+/.test(c.detailsUrl ?? ''));
 }
 export function eligible(pr, state) {
-  return failures(pr).length > 0 && !(state.heads ?? []).includes(pr.headRefOid) &&
+  return (conflicted(pr) || failures(pr).length > 0) && !(state.heads ?? []).includes(pr.headRefOid) &&
     (state.attempts ?? 0) < 3;
 }
 export function assertPushable(original, fresh, dirty) {
   if (dirty) throw new Error('Verification changed the source tree');
   if (fresh.state !== 'OPEN' || fresh.headRefOid !== original.headRefOid ||
-      fresh.headRefName !== original.headRefName || fresh.isDraft || fresh.isCrossRepository) {
+      fresh.headRefName !== original.headRefName || fresh.baseRefName !== original.baseRefName ||
+      fresh.isDraft || fresh.isCrossRepository) {
     throw new Error('PR changed while repairing; refusing to push');
   }
 }
@@ -36,6 +38,21 @@ function write(file, data) {
   fs.renameSync(`${file}.tmp`, file);
 }
 const view = (repo, n) => JSON.parse(gh(['pr', 'view', n, '--repo', repo, '--json', fields]));
+export function listOpenPullRequests(repo, request = gh, inspect = view) {
+  const pages = JSON.parse(request(['api', '--paginate', '--slurp',
+    `repos/${repo}/pulls?state=open&per_page=100`]));
+  return pages.flat().map(pr => inspect(repo, pr.number));
+}
+
+// Keep HEAD unchanged for the agent; the orchestrator commits the resolved merge.
+export function prepareMerge(git, base) {
+  try {
+    git(['merge', '--no-commit', '--no-ff', base]);
+  } catch (error) {
+    if (!git(['diff', '--name-only', '--diff-filter=U']).trim()) throw error;
+  }
+  return git(['diff', '--name-only', '--diff-filter=U']).trim().split('\n').filter(Boolean);
+}
 
 function busyIssue(repo, number) {
   const [owner, name] = repo.split('/');
@@ -55,7 +72,7 @@ function verifyAndPush(pr, repo, workspace, worktree, attempt, git) {
   const remote = `https://github.com/${repo}.git`;
   run(path.join(root, 'scripts/implement/run-verification.sh'), [attempt], {stdio: 'inherit'});
   // A frontend failure needs frontend checks even if the branch only changes backend code.
-  if (failures(pr).some(c => /frontend|vitest|jest/i.test(`${c.name} ${c.workflowName}`)) &&
+  if (failures(pr).some(c => /frontend|vitest|jest|vite|angular/i.test(`${c.name} ${c.workflowName}`)) &&
       !git(['diff', '--name-only', `${base}...HEAD`]).split('\n').some(p => p.startsWith('sweatcharge_fe/'))) {
     run(path.join(root, 'scripts/implement/install-frontend-deps.sh'), [attempt], {stdio: 'inherit'});
     for (const command of ['lint', 'test:unit', 'build']) {
@@ -64,6 +81,10 @@ function verifyAndPush(pr, repo, workspace, worktree, attempt, git) {
   }
   const fresh = view(repo, number);
   assertPushable(pr, fresh, git(['status', '--porcelain']).trim());
+  git(['fetch', remote, `refs/heads/${pr.baseRefName}`]);
+  if (git(['rev-parse', 'FETCH_HEAD']).trim() !== base) {
+    throw new Error('Target branch moved during verification; refusing to push');
+  }
   git(['push', remote, `HEAD:refs/heads/${pr.headRefName}`]);
   write(path.join(attempt, 'outcome.json'), {status: 'pushed', head: git(['rev-parse', 'HEAD']).trim(),
     note: 'Local verification passed; awaiting GitHub Actions'});
@@ -78,7 +99,7 @@ function repair(repo, workspace, dir, number) {
   const state = read(stateFile);
   const resume = process.env.CI_VERIFY_EXISTING === 'true';
   if (!resume && !eligible(pr, state)) return;
-  if (resume && !failures(pr).length) throw new Error('PR no longer has eligible failed checks');
+  if (resume && !conflicted(pr) && !failures(pr).length) throw new Error('PR no longer needs repair');
   if (busyIssue(repo, number)) {
     console.log(`PR #${number}: linked issue is being edited; deferring`);
     return;
@@ -121,6 +142,7 @@ function repair(repo, workspace, dir, number) {
     run('git', ['-C', workspace, 'fetch', remote, `refs/heads/${pr.baseRefName}`]);
     const base = run('git', ['-C', workspace, 'rev-parse', 'FETCH_HEAD']).trim();
     write(path.join(attempt, 'state.json'), {worktree, base});
+    const conflicts = conflicted(pr) ? prepareMerge(git, base) : [];
     const logs = [];
     for (const check of failures(pr)) {
       const [, , jobId] = check.detailsUrl.match(/\/actions\/runs\/(\d+)\/job\/(\d+)/);
@@ -132,7 +154,8 @@ function repair(repo, workspace, dir, number) {
       fs.writeFileSync(`${file}.tail`, log.split('\n').slice(-400).join('\n'));
       logs.push({name: check.name, full: file, tail: `${file}.tail`});
     }
-    const context = {repo, pr: number, head: pr.headRefOid, worktree, logs,
+    const context = {repo, pr: number, head: pr.headRefOid, base, baseRefName: pr.baseRefName,
+      mergeStarted: conflicted(pr), conflicts, worktree, logs,
       result: path.join(attempt, 'result.json')};
     const prompt = fs.readFileSync(path.join(root, 'prompts/resolve-failed-tests.md'), 'utf8');
     fs.writeFileSync(path.join(attempt, 'prompt.md'), `${prompt}\n\nContext:\n${JSON.stringify(context, null, 2)}\n` +
@@ -144,9 +167,10 @@ function repair(repo, workspace, dir, number) {
     if (git(['rev-parse', 'HEAD']).trim() !== fetched) throw new Error('Agent changed HEAD');
     if (!git(['status', '--porcelain']).trim()) throw new Error('Agent produced no changes');
     git(['add', '-A']);
+    if (git(['diff', '--name-only', '--diff-filter=U']).trim()) throw new Error('Unresolved merge conflicts');
     git(['diff', '--cached', '--check']);
     // Commit locally first so existing verification sees the complete final diff.
-    git(['commit', '-m', `fix: repair failing tests on PR #${number}`]);
+    git(['commit', '-m', `fix: repair pipeline and merge conflicts on PR #${number}`]);
     verifyAndPush(pr, repo, workspace, worktree, attempt, git);
     created = false;
   } catch (error) {
@@ -172,15 +196,17 @@ function main() {
     repair(repo, workspace, path.join(home, selected), selected);
     return;
   }
-  const prs = selected ? [view(repo, selected)] : JSON.parse(gh([
-    'pr', 'list', '--repo', repo, '--state', 'open', '--limit', '200', '--json', fields]));
+  const prs = selected ? [view(repo, selected)] : listOpenPullRequests(repo);
+  let attempted = 0;
   for (const pr of prs.sort((a, b) => a.number - b.number)) {
     const dir = path.join(home, String(pr.number));
     fs.mkdirSync(dir, {recursive: true});
     const state = read(path.join(dir, 'attempts.json'));
     const checks = pr.statusCheckRollup ?? [];
-    if (checks.length && checks.every(c => c.conclusion === 'SUCCESS' || c.state === 'SUCCESS')) {
+    if (!conflicted(pr) && checks.length && checks.every(c => c.conclusion === 'SUCCESS' || c.state === 'SUCCESS')) {
       write(path.join(dir, 'attempts.json'), {heads: [], attempts: 0});
+      state.heads = [];
+      state.attempts = 0;
     }
     if (process.env.CI_VERIFY_EXISTING !== 'true' && !eligible(pr, state)) continue;
     if (busyIssue(repo, pr.number)) continue;
@@ -190,13 +216,14 @@ function main() {
       run('flock', ['-n', '-E', '75', lock, 'node', fileURLToPath(import.meta.url), '--repair'], {
         env: {...process.env, CI_PR_NUMBER: String(pr.number)}, stdio: 'inherit',
       });
+      attempted++;
     } catch (error) {
       if (error.status === 75) continue;
+      attempted++;
       console.error(`Could not run repair for PR #${pr.number}: ${error.message}`);
       process.exitCode = 1;
     }
-    return; // One repair per tick; already-attempted heads cannot starve later PRs.
   }
-  console.log('No eligible failed test suites');
+  console.log(attempted ? `Inspected ${attempted} PR repairs` : 'No eligible pipeline failures or merge conflicts');
 }
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) main();
