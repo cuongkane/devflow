@@ -39,13 +39,21 @@ project_dir=$(cd "$here/../.." && pwd)
 # `ended_at`, and the report says so rather than showing a blank.
 date +%s > "$run_dir/$phase/started_at"
 
+agent_status=0
 "$project_dir/run-agent.sh" \
   "$run_dir/$phase/prompt.md" \
   "$budget" \
   "$run_dir/$phase/agent-stream.jsonl" \
   "$tier" \
   "$continue_session" \
-  "$codex_effort_override" || echo "[$phase] agent exited non-zero; judging it by its result.json" >&2
+  "$codex_effort_override" || agent_status=$?
+if [ "$agent_status" -eq 75 ]; then
+  error=$(jq -sr '[.[] | select(.type == "error") | .message] | last' "$run_dir/$phase/agent-stream.jsonl")
+  jq -nc --arg error "$error" '{status: "failed", error: $error}' > "$run_dir/$phase/result.json"
+  date +%s > "$run_dir/$phase/ended_at"
+  exit 75
+fi
+[ "$agent_status" -eq 0 ] || echo "[$phase] agent exited non-zero; judging it by its result.json" >&2
 
 date +%s > "$run_dir/$phase/ended_at"
 printf 'tier:     %s\nbudget:   $%s\n' "$tier" "$budget" > "$run_dir/$phase/plan"

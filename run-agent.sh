@@ -32,7 +32,19 @@ esac
 
 project_dir=$(cd "$(dirname "$0")" && pwd)
 config_file="$project_dir/agent.yaml"
-agent=$(awk '/^[[:space:]]*agent:[[:space:]]*/ {print $2; exit}' "$config_file")
+# Recheck before each phase: the provider used by a prior phase may now be low.
+selection_error=$(mktemp "${TMPDIR:-/tmp}/dagu-agent-selection.XXXXXX")
+agent=$("$project_dir/scripts/select-agent.sh" 10 2>"$selection_error")
+selection_status=$?
+cat "$selection_error" >&2
+if [ "$selection_status" -ne 0 ]; then
+  # Preserve the reason in the stream so existing failure reports can read it.
+  jq -nc --rawfile message "$selection_error" \
+    '{type: "error", message: $message}' > "$stream_file"
+  rm -f "$selection_error"
+  exit 75
+fi
+rm -f "$selection_error"
 
 # Read one flat `key: value` pair from agent.yaml. A missing key and the literal
 # `default` are the same answer -- let the CLI pick -- so a tier nobody has tuned
@@ -43,6 +55,7 @@ setting() {
   printf '%s' "$value"
 }
 
+run_selected_agent() {
 model=$(setting "model_${agent}_${tier}")
 
 # `<cli default>` rather than an empty string: for codex every tier currently
@@ -182,3 +195,46 @@ case "$agent" in
     exit 2
     ;;
 esac
+
+}
+
+run_selected_agent
+status=$?
+# A quota may be exhausted during a phase after the initial snapshot. Retry only
+# an explicit quota error, once, with the other provider and the same prompt.
+# Successful assistant text mentioning limits must never trigger a second run.
+quota_exhausted() {
+  [ -s "$stream_file" ] && jq -se '
+  any(.[];
+    (if .type == "error" or .type == "turn.failed" then
+       (.error.message // .message // "")
+     elif .type == "assistant" and .error != null then
+       ([.error, (.message.content[]?.text // "")] | join(" "))
+     elif .type == "result" and .is_error == true then
+       ([.result // "", .errors[]?] | join(" "))
+     else "" end)
+    | test("usage[_ -]?limit|rate[_ -]?limit|quota.{0,30}(exceed|exhaust)|hit your limit"; "i"))
+' "$stream_file" >/dev/null 2>&1
+}
+if [ "$agent" != opencode ] && quota_exhausted; then
+  previous_agent=$agent
+  [ "$agent" = claude ] && agent=codex || agent=claude
+  if "$project_dir/scripts/check-$agent-usage.sh" 10; then
+    printf '[usage] quota exhausted during phase; switching %s -> %s\n' "$previous_agent" "$agent" >&2
+    mv "$stream_file" "${stream_file%.jsonl}.$previous_agent.jsonl"
+    run_selected_agent
+    status=$?
+    if quota_exhausted; then
+      message="[usage] STOP: Claude and Codex both exhausted during this phase"
+      printf '%s\n' "$message" >&2
+      jq -nc --arg message "$message" '{type: "error", message: $message}' >> "$stream_file"
+      exit 75
+    fi
+  else
+    message="[usage] STOP: $previous_agent exhausted during phase and $agent has no verified five-hour headroom"
+    printf '%s\n' "$message" >&2
+    jq -nc --arg message "$message" '{type: "error", message: $message}' >> "$stream_file"
+    exit 75
+  fi
+fi
+exit "$status"

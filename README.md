@@ -21,7 +21,7 @@ The fork exists because writing a specification before writing code is right for
 feature and pure waste for a wrong label on a card. See
 [The two implementation flows](#the-two-implementation-flows).
 
-The coding-agent CLI is selected once in `agent.yaml`:
+The preferred coding-agent CLI is selected in `agent.yaml`:
 
 ```yaml
 agent: codex
@@ -326,8 +326,10 @@ prompts/standards/                       the engineering practices and testing
 
 scripts/standards.sh                     print the standards appendix for a prompt
 scripts/relabel.sh                       guarded claim: swap FROM -> TO
-scripts/codex-usage-available.sh         defer AI work when any
-                                         Codex quota window has <10% remaining
+scripts/codex-usage-available.sh         gate queued work using Claude/Codex rotation
+scripts/select-agent.sh                 select a provider with >=10% five-hour quota
+scripts/check-claude-usage.sh            read Claude OAuth five-hour usage
+scripts/check-codex-usage.sh             read Codex app-server five-hour usage
 scripts/retry-failed-issues.mjs          record workflow failures and requeue up
                                          to three retries, preserving evidence
 scripts/set-state.sh                     unguarded report: force exactly one state
@@ -862,13 +864,20 @@ project configuration. Then run `make labels` for the target repo.
   pull request merges and `finish_merged` removes the worktree outright. This is
   the same hole `reclaim-stranded.sh` closes for labels, and nothing sweeps it
   for disk: if the worker is being killed often, check free space by hand.
-- **Codex keeps 10% quota headroom.** Before clarification or either implementer
-  claims an issue, the retry poller requeues failed work, or PR repair spends an
-  attempt, it reads Codex's account rate-limit snapshot.
-  If any reported rolling window has less than 10% remaining, the run completes
-  without claiming the issue; the unchanged ready label lets the next scheduled
-  poll retry it. Claude and opencode bypass this gate. A failed quota lookup is
-  surfaced as a failed run and also leaves the issue queued.
+- **Claude and Codex keep 10% five-hour quota headroom.** Queue gates and
+  every agent phase check the preferred provider from `agent.yaml`. Below 10%
+  remaining, they switch to the other provider; subsequent phases return to the
+  preferred provider once it is usable again. A structured quota error during
+  a phase also retries its prompt once with the other provider, retaining the
+  first provider’s stream beside the current stream. Exactly 10% passes. Weekly limits
+  do not participate in this threshold. If both are below 10%, the run fails
+  with an explicit error in stderr; unclaimed issues stay queued. Unknown quota
+  also stops execution unless the other provider has verified headroom. Opencode
+  bypasses rotation. No shared config is rewritten by concurrent workflows.
+  Claude uses the same OAuth usage endpoint as `/usage`; its token needs
+  `user:profile` scope. An inference-only setup token cannot read usage and is
+  reported as an unavailable quota check. Codex uses `account/rateLimits/read`
+  through its app-server.
 - **Clarification and review are not serialised** with implementation, and do not
   need to be. A long build no longer blocks a question being asked.
 - **The Mac must be awake.** A polling scheduler does nothing while asleep.

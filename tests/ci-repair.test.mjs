@@ -138,9 +138,10 @@ test('a failed repair does not stop the remaining PRs in the poll', () => {
   try {
     fs.writeFileSync(path.join(dir, 'codex'), `#!/usr/bin/env node
 require('node:readline').createInterface({input: process.stdin}).on('line', line => {
-  if (JSON.parse(line).id === 2) console.log(JSON.stringify({id: 2, result: {rateLimits: {primary: {usedPercent: 0}}}}));
+  if (JSON.parse(line).id === 2) console.log(JSON.stringify({id: 2, result: {rateLimits: {primary: {usedPercent: 0, windowDurationMins: 300}}}}));
 });
 `, {mode: 0o755});
+    fs.writeFileSync(path.join(dir, 'curl'), '#!/bin/sh\nexit 22\n', {mode: 0o755});
     fs.writeFileSync(path.join(dir, 'gh'), `#!/usr/bin/env node
 const args = process.argv.slice(2);
 if (args[0] === 'pr') {

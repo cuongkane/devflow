@@ -207,16 +207,16 @@ test('clarification claim respects the 10% gate before changing labels', t => {
   }
 });
 
-test('the real quota helper defers fractional windows below 10% and accepts 10%', t => {
+test('the Codex five-hour helper rejects fractional headroom below 10% and accepts 10%', t => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'quota-boundary-'));
   t.after(() => fs.rmSync(dir, {recursive: true, force: true}));
   fs.mkdirSync(path.join(dir, 'scripts'));
-  fs.copyFileSync('scripts/codex-usage-available.sh', path.join(dir, 'scripts/usage.sh'));
+  fs.copyFileSync('scripts/check-codex-usage.sh', path.join(dir, 'scripts/usage.sh'));
   fs.writeFileSync(path.join(dir, 'agent.yaml'), 'agent: codex\n');
   fs.writeFileSync(path.join(dir, 'codex'), `#!/usr/bin/env node
 require('node:readline').createInterface({input: process.stdin}).on('line', line => {
   if (JSON.parse(line).id === 2) console.log(JSON.stringify({id: 2, result: {rateLimits: {
-    primary: {usedPercent: 80}, secondary: {usedPercent: Number(process.env.USED_PERCENT)}
+    primary: {usedPercent: 80, windowDurationMins: 10080}, secondary: {usedPercent: Number(process.env.USED_PERCENT), windowDurationMins: 300}
   }}}));
 });
 `, {mode: 0o755});
